@@ -3,36 +3,36 @@ version: '3.8'
 services:
   postgres:
     image: ankane/pgvector:latest
-    container_name: sublimados_postgres
+    container_name: dental_postgres  # 👈 CAMBIADO
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin123
-      POSTGRES_DB: sublimados_db
+      POSTGRES_DB: dental_db  # 👈 CAMBIADO
     ports:
-      - "5432:5432"
+      - "5433:5432"  # 👈 CAMBIADO (puerto externo 5433)
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - dental_postgres_data:/var/lib/postgresql/data  # 👈 CAMBIADO
     restart: always
 
   redis:
     image: redis:7-alpine
-    container_name: sublimados_redis
+    container_name: dental_redis  # 👈 CAMBIADO
     ports:
-      - "6379:6379"
+      - "6380:6379"  # 👈 CAMBIADO (puerto externo 6380)
     volumes:
-      - redis_data:/data
+      - dental_redis_data:/data  # 👈 CAMBIADO
     restart: always
 
   backend:
     build: ./backend
-    container_name: sublimados_backend
+    container_name: dental_backend  # 👈 CAMBIADO
     ports:
-      - "8000:8000"
+      - "8001:8000"  # 👈 CAMBIADO (puerto externo 8001)
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://admin:admin123@postgres:5432/sublimados_db
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://admin:admin123@postgres:5432/dental_db  # 👈 CAMBIADO (nombre DB)
+      REDIS_URL: redis://redis:6379/0  # El interno no cambia
     volumes:
       - ./backend:/app
     depends_on:
@@ -41,5 +41,5 @@ services:
     restart: always
 
 volumes:
-  postgres_data:
-  redis_data:
+  dental_postgres_data:  # 👈 CAMBIADO
+  dental_redis_data:      # 👈 CAMBIADO

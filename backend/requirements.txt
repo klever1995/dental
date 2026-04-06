@@ -12,3 +12,5 @@ cloudinary
 requests
 pydub
 groq
+pytz
+pydantic

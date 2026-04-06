@@ -1,20 +1,22 @@
-import os
-from typing import List, Dict, Any
+import os 
+from typing import List, Dict, Any, Optional
 import numpy as np
 from sqlalchemy.orm import Session
-from openai import AzureOpenAI
+from openai import OpenAI
 from PyPDF2 import PdfReader
 from io import BytesIO
 import hashlib
+import json
+from datetime import datetime
+import pytz
 
-# Inicializar cliente de Azure OpenAI
-client = AzureOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_KEY"),
-    api_version=os.getenv("OPENAI_API_VERSION", "2024-08-01-preview")
+# Inicializar cliente de OpenAI estándar
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
 )
 
-AZURE_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
+OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-ada-002")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")
 
 class RAGService:
     def __init__(self, db: Session, empresa_id: int, cliente_id: int = None):
@@ -22,7 +24,7 @@ class RAGService:
         self.empresa_id = empresa_id
         self.cliente_id = cliente_id
     
-    def obtener_historial_reciente(self, limite: int = 5) -> str:
+    def obtener_historial_reciente(self, limite: int = 20) -> str:
         """Obtiene los últimos mensajes de la conversación actual"""
         if not self.cliente_id:
             return ""
@@ -33,7 +35,6 @@ class RAGService:
             Conversacion.cliente_id == self.cliente_id
         ).order_by(Conversacion.timestamp.desc()).limit(limite).all()
         
-        # Invertir para orden cronológico
         mensajes.reverse()
         
         historial = []
@@ -42,6 +43,162 @@ class RAGService:
             historial.append(f"{emisor}: {msg.mensaje}")
         
         return "\n".join(historial)
+    
+    def extraer_intencion_y_fecha(self, mensaje: str, historial: str = "") -> dict:
+        """
+        Extrae la intención del mensaje, fecha, hora, nombre y booking_id si corresponde.
+        NO ejecuta funciones, solo devuelve JSON.
+        """
+        ecuador = pytz.timezone("America/Guayaquil")
+        hoy = datetime.now(ecuador).strftime("%Y-%m-%d")
+        
+        prompt = f"""Eres un asistente que analiza mensajes de clientes de una clínica dental.
+
+Hoy es {hoy}.
+
+Analiza el siguiente mensaje y devuelve SOLO un JSON con estos campos:
+
+{{
+    "intencion": "HORARIOS" | "AGENDAR" | "CANCELAR" | "REAGENDAR" | "CONSULTAR_CITAS" | "INFO" | "OTRO",
+    "fecha": "YYYY-MM-DD" o null,
+    "hora": "HH:MM" o null,
+    "nombre": "nombre extraído" o null,
+    "booking_id": null o número entero (si el usuario menciona un ID de cita)
+}}
+
+- "HORARIOS": si el usuario pregunta por disponibilidad de horarios (ej: "qué horarios tienes el martes", "tienes cita el lunes")
+- "AGENDAR": si el usuario quiere agendar una cita explícitamente
+- "CANCELAR": si el usuario quiere cancelar una cita existente (ej: "quiero cancelar mi cita", "cancelar", "no voy a poder ir")
+- "REAGENDAR": si el usuario quiere reagendar/cambiar/mover una cita existente (ej: "quiero reagendar mi cita", "cambiar mi cita", "mover la cita del 6 de abril")
+- "CONSULTAR_CITAS": si el usuario pregunta por sus citas agendadas (ej: "tengo citas agendadas?", "ver mis citas", "qué citas tengo")
+- "INFO": si pregunta por información general (precios, ubicación, etc.)
+- "OTRO": cualquier otra cosa
+
+Para fechas, entiende expresiones como:
+- "martes de la próxima semana" → calcula la fecha exacta
+- "mañana" → fecha de mañana
+- "31 de marzo" → 2026-03-31
+- "el lunes" → próximo lunes
+
+Para cancelación o reagendamiento, si el usuario menciona un número de ID de cita (ej: "cancelar la cita 17825362", "reagendar la cita 17906494"), extrae ese número en el campo booking_id.
+Si menciona una fecha (ej: "cancelar la cita del 2 de abril", "reagendar la cita del 6 de abril"), extrae esa fecha en el campo fecha.
+
+Historial reciente:
+{historial}
+
+Mensaje: "{mensaje}"
+
+RESPONDE SOLO EL JSON, sin texto adicional."""
+        
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            resultado = json.loads(response.choices[0].message.content)
+            return resultado
+        except:
+            return {"intencion": "OTRO", "fecha": None, "hora": None, "nombre": None, "booking_id": None}
+    
+    def clasificar_respuesta_flujo(self, mensaje: str, paso_actual: str, historial: str = "") -> dict:
+        """
+        Clasifica si el mensaje del usuario es una respuesta válida para el paso actual
+        o si es una interrupción/pregunta fuera del flujo.
+        
+        Args:
+            mensaje: Mensaje del usuario
+            paso_actual: El paso actual del flujo (ej: "nombre", "fecha", "hora", "email")
+            historial: Historial reciente de la conversación
+        
+        Returns:
+            dict: {
+                "es_valido": bool,  # True si el mensaje responde a lo que se pide
+                "respuesta_rag": str,  # Si es inválido, respuesta generada por RAG
+                "dato_extraido": str o null  # Si es válido, el dato extraído
+            }
+        """
+        ecuador = pytz.timezone("America/Guayaquil")
+        hoy = datetime.now(ecuador).strftime("%Y-%m-%d")
+        
+        prompt = f"""Eres un asistente que analiza mensajes de clientes durante un proceso de agendamiento de citas.
+
+Hoy es {hoy}.
+
+El bot está actualmente pidiendo al cliente: "{paso_actual}"
+
+Analiza el siguiente mensaje del cliente y determina si está respondiendo directamente a lo que se le pide o si está haciendo una pregunta o comentario fuera del flujo.
+
+Devuelve SOLO un JSON con estos campos:
+{{
+    "es_valido": true/false,
+    "dato_extraido": "el valor si responde a lo pedido, sino null",
+    "respuesta_rag": "si es inválido, una respuesta amable y útil usando el contexto"
+}}
+
+Ejemplos:
+- Paso "nombre", mensaje "Klever Robalino" → válido, extrae "Klever Robalino"
+- Paso "nombre", mensaje "¿Cuánto cuesta una limpieza?" → inválido, respuesta_rag con info de precios
+- Paso "fecha", mensaje "mañana" → válido, extrae "2026-04-06"
+- Paso "fecha", mensaje "¿Atienden sábados?" → inválido, respuesta_rag con horarios
+- Paso "email", mensaje "Mi correo es klever@mail.com" → válido, extrae "klever@mail.com"
+- Paso "email", mensaje "Espera un momento" → inválido, respuesta_rag amable
+
+Historial reciente:
+{historial}
+
+Mensaje: "{mensaje}"
+
+RESPONDE SOLO EL JSON, sin texto adicional."""
+        
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            resultado = json.loads(response.choices[0].message.content)
+            return resultado
+        except:
+            return {"es_valido": False, "dato_extraido": None, "respuesta_rag": "Lo siento, no entendí. ¿Podrías repetirlo?"}
+    
+    def generar_respuesta_con_texto(self, consulta: str, contexto: str, resumen_cliente: str = "") -> str:
+        """
+        Genera respuesta usando GPT-4o SOLO para conversación (sin function calling)
+        """
+        historial = self.obtener_historial_reciente()
+        
+        system_prompt = f"""Eres un asistente virtual de una clínica dental llamada Sonrisa Dental Center.
+Tu nombre es Aurelia.
+
+Usa la siguiente información de la clínica para responder preguntas generales:
+{contexto}
+
+Historial del paciente: {resumen_cliente}
+
+Conversación reciente:
+{historial}
+
+Instrucciones:
+- Responde preguntas sobre la clínica (horarios de atención, servicios, precios, ubicación, políticas).
+- Sé amable, natural y profesional.
+- Responde en español.
+- Si no sabes algo, di que consultarás con un asesor."""
+        
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": consulta}
+            ],
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content
     
     def extraer_texto_pdf(self, archivo_bytes: bytes) -> str:
         """Extrae texto de un archivo PDF"""
@@ -64,52 +221,19 @@ class RAGService:
         return chunks
     
     def generar_embedding(self, texto: str) -> List[float]:
-        """Genera embedding usando Azure OpenAI"""
+        """Genera embedding usando OpenAI estándar"""
         respuesta = client.embeddings.create(
-            model=AZURE_EMBEDDING_DEPLOYMENT,
+            model=OPENAI_EMBEDDING_MODEL,
             input=texto
         )
         return respuesta.data[0].embedding
-    
-    def generar_respuesta_llm(self, consulta: str, contexto: str, resumen_cliente: str = "") -> str:
-        """Genera respuesta usando GPT-4o de Azure con historial de conversación"""
-        
-        # Obtener historial reciente
-        historial = self.obtener_historial_reciente()
-        
-        system_prompt = f"""Eres un asistente virtual de una tienda de sublimados.
-        Usa la siguiente información de la empresa para responder:
-        
-        {contexto}
-        
-        Historial del cliente (resumen): {resumen_cliente}
-        
-        Historial de la conversación actual:
-        {historial}
-        
-        IMPORTANTE: Mantén la coherencia con la conversación. No repitas saludos ni información que ya hayas proporcionado antes.
-        Sé amable, profesional y responde SOLO con información que esté en el contexto.
-        Si no sabes algo, sugiere contactar a un asesor humano."""
-        
-        respuesta = client.chat.completions.create(
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": consulta}
-            ],
-            temperature=0.7
-        )
-        
-        return respuesta.choices[0].message.content
     
     def guardar_documento(self, nombre_archivo: str, contenido_bytes: bytes):
         """Procesa y guarda un documento en la base de datos vectorial"""
         from app.models.documento import Documento, ChunkDocumento
         
-        # Extraer texto
         texto = self.extraer_texto_pdf(contenido_bytes)
         
-        # Crear registro del documento
         doc = Documento(
             empresa_id=self.empresa_id,
             nombre=nombre_archivo,
@@ -118,11 +242,9 @@ class RAGService:
         self.db.add(doc)
         self.db.flush()
         
-        # Dividir en chunks y generar embeddings
         chunks = self.dividir_en_chunks(texto)
         for i, chunk_texto in enumerate(chunks):
             embedding = self.generar_embedding(chunk_texto)
-            
             chunk = ChunkDocumento(
                 documento_id=doc.id,
                 indice=i,
@@ -138,15 +260,12 @@ class RAGService:
         """Busca chunks similares a la consulta usando similitud de coseno"""
         from app.models.documento import ChunkDocumento
         
-        # Generar embedding de la consulta
         embedding_consulta = self.generar_embedding(consulta)
         
-        # Buscar chunks de la empresa
         chunks = self.db.query(ChunkDocumento).filter(
             ChunkDocumento.documento.has(empresa_id=self.empresa_id)
         ).all()
         
-        # Calcular similitud de coseno
         resultados = []
         for chunk in chunks:
             similitud = np.dot(embedding_consulta, chunk.embedding) / (
@@ -158,6 +277,5 @@ class RAGService:
                 "documento": chunk.documento.nombre
             })
         
-        # Ordenar por similitud y devolver top_k
         resultados.sort(key=lambda x: x["similitud"], reverse=True)
         return resultados[:top_k]

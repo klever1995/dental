@@ -10,44 +10,47 @@ from app.models.cliente import Cliente
 from app.models.conversacion import Conversacion, TipoEmisor
 from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
-from app.services.cloudinary import subir_imagen_desde_bytes
-from app.services.whatsapp_sender import enviar_mensaje_whatsapp, enviar_mensaje_con_botones
+from app.services.whatsapp_sender import enviar_mensaje_whatsapp
+from app.services.calcom import obtener_slots_disponibles, agendar_cita, obtener_citas_cliente, eliminar_cita, reagendar_cita
+from app.handlers.horarios_handler import manejar_horarios
+from app.handlers.agendamiento_handler import manejar_agendamiento
+from app.handlers.cancelacion_handler import manejar_cancelacion
+from app.handlers.reagendamiento_handler import manejar_reagendamiento
+import pytz
+import re
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
+# Diccionario temporal para guardar datos de agendamiento y cancelación por cliente
+agendamientos_temp = {}
+
 def transcribir_audio(url_audio: str) -> str:
-    """Transcribe audio usando Groq Whisper desde URL directa"""
     try:
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        
         headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
         response = requests.get(url_audio, headers=headers)
-        
         if response.status_code != 200:
             raise Exception(f"Error descargando audio: {response.status_code}")
-        
         archivo = ("audio.ogg", response.content, "audio/ogg")
-        
         transcripcion = client.audio.transcriptions.create(
             file=archivo,
             model="whisper-large-v3",
             response_format="text"
         )
-        
         return transcripcion
     except Exception as e:
-        print(f"❌ Error en transcripción con Groq: {type(e).__name__}: {str(e)}")
+        print(f"❌ Error en transcripción: {e}")
         return "[Error al transcribir el audio]"
+
+def extraer_email(mensaje: str) -> str:
+    match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', mensaje)
+    return match.group(0) if match else None
 
 @router.post("/webhook")
 async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
-    """
-    Endpoint que procesa los mensajes de WhatsApp
-    """
+    global agendamientos_temp
     try:
         body = await request.json()
-        print("📩 Mensaje recibido:", body)
-        
         entry = body.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
@@ -56,47 +59,27 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         if not messages:
             return {"status": "ok", "message": "Sin mensajes"}
         
+        print("📩 Mensaje recibido:", body)
+        
         msg = messages[0]
         telefono_cliente = msg.get("from")
-        
         tipo_mensaje = msg.get("type", "text")
         texto_mensaje = ""
-        imagen_info = None
         audio_url = None
         
-        # Detectar tipo de mensaje
         if tipo_mensaje == "text":
             texto_mensaje = msg.get("text", {}).get("body", "")
-        elif tipo_mensaje == "image":
-            imagen_data = msg.get("image", {})
-            imagen_id = imagen_data.get("id")
-            if imagen_id:
-                texto_mensaje = "📷 [El cliente envió un comprobante de pago]"
-                imagen_info = {
-                    "id": imagen_id,
-                    "mime_type": imagen_data.get("mime_type"),
-                    "sha256": imagen_data.get("sha256"),
-                    "url": imagen_data.get("url")
-                }
+            print(f"📝 Texto recibido: '{texto_mensaje}'")
         elif tipo_mensaje == "audio":
             audio_data = msg.get("audio", {})
             audio_url = audio_data.get("url")
             if audio_url:
                 texto_mensaje = "🎤 [El cliente envió un audio]"
-        # Detectar respuesta de botones interactivos
-        elif tipo_mensaje == "interactive":
-            interactive_data = msg.get("interactive", {})
-            if interactive_data.get("type") == "button_reply":
-                button_reply = interactive_data.get("button_reply", {})
-                texto_mensaje = f"🔘 [Respuesta de botón: {button_reply.get('title')}]"
-                # Guardamos el callback_data para procesarlo después
-                msg["callback_data"] = button_reply.get("id")
         
         metadata = value.get("metadata", {})
-        telefono_empresa = metadata.get("display_phone_number", "")
-        telefono_empresa = telefono_empresa.replace("+", "")
+        telefono_empresa = metadata.get("display_phone_number", "").replace("+", "")
         
-        if not telefono_cliente or (not texto_mensaje and not imagen_info and not audio_url):
+        if not telefono_cliente or not texto_mensaje:
             return {"status": "ok", "message": "Mensaje sin contenido"}
         
         empresa = db.query(Empresa).filter(
@@ -105,7 +88,7 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         ).first()
         
         if not empresa:
-            print(f"⚠️ Empresa no encontrada para teléfono: {telefono_empresa}")
+            print(f"⚠️ Empresa no encontrada")
             return {"status": "ok", "message": "Empresa no identificada"}
         
         cliente = db.query(Cliente).filter(
@@ -113,60 +96,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             Cliente.telefono == telefono_cliente
         ).first()
         
-        # 👇 PROCESAR RESPUESTAS DEL DUEÑO (SOLO BOTONES, SE ELIMINÓ TEXTO MANUAL)
-        if empresa.telefono_dueño and telefono_cliente == empresa.telefono_dueño:
-            
-            # Procesar respuesta de botones (callback_data)
-            if tipo_mensaje == "interactive" and msg.get("callback_data"):
-                callback_id = msg.get("callback_data")
-                
-                if callback_id.startswith("APROBAR_") or callback_id.startswith("RECHAZAR_"):
-                    partes = callback_id.split("_")
-                    accion = partes[0]
-                    cliente_id = int(partes[1])
-                    
-                    cliente_pendiente = db.query(Cliente).filter(
-                        Cliente.id == cliente_id,
-                        Cliente.empresa_id == empresa.id
-                    ).first()
-                    
-                    if cliente_pendiente and cliente_pendiente.datos_estructurados:
-                        datos = cliente_pendiente.datos_estructurados
-                        if datos.get("ultimo_comprobante", {}).get("estado_pago") == "pendiente":
-                            
-                            if accion == "APROBAR":
-                                datos["ultimo_comprobante"]["estado_pago"] = "confirmado"
-                                datos["ultimo_comprobante"]["fecha_confirmacion"] = str(datetime.datetime.now())
-                                
-                                mensaje_confirmacion = "✅ ¡Buenas noticias! Tu pago ha sido verificado y ya tienes acceso al curso. 😊"
-                                enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_confirmacion)
-                                
-                                mensaje_material = (
-                                    "✅ ¡Gracias por tu paciencia! Tu material de LETTERING ya está listo. Aquí tienes el acceso para descargarlo:\n\n"
-                                    "[Acceso al Pack de Lettering](https://drive.google.com/drive/folders/1o1281qJnphKE3ClYHSHw1vNg6U?usp=shar)\n\n"
-                                    "Incluye:\n"
-                                    "- Guías y libros digitales\n"
-                                    "- Plantillas de práctica\n"
-                                    "- Cuadernillo de caligrafía\n"
-                                    "- Técnicas y secretos para mejorar tus diseños\n\n"
-                                    "Todo es digital (PDF) y tendrás acceso de por vida. Si necesitas ayuda con algo o tienes dudas, no dudes en escribirme. ¡Gracias por tu compra y disfruta de tu aventura creativa! 😊"
-                                )
-                                enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_material)
-                                
-                            else:  # RECHAZAR
-                                datos["ultimo_comprobante"]["estado_pago"] = "rechazado"
-                                datos["ultimo_comprobante"]["fecha_rechazo"] = str(datetime.datetime.now())
-                                mensaje_rechazo = "❌ Hubo un problema con tu comprobante. Por favor, contacta a un asesor para más detalles."
-                                enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_rechazo)
-                            
-                            cliente_pendiente.datos_estructurados = datos
-                            db.commit()
-                            
-                            return {"status": "ok", "message": f"Pago {accion} para cliente {cliente_id}"}
-            
-            return {"status": "ok", "message": "Formato no reconocido o cliente sin pago pendiente"}
-        
-        # Crear cliente si no existe
         if not cliente:
             cliente = Cliente(
                 empresa_id=empresa.id,
@@ -179,68 +108,14 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(cliente)
         
-        # Procesar audio si existe
         if audio_url:
             try:
                 transcripcion = transcribir_audio(audio_url)
                 texto_mensaje = f"🎤 [Audio transcrito]: {transcripcion}"
-                print(f"📝 Transcripción: {transcripcion}")
             except Exception as e:
-                print(f"❌ Error procesando audio: {e}")
+                print(f"❌ Error en audio: {e}")
                 texto_mensaje = "🎤 [Error al procesar el audio]"
         
-        # Procesar imagen (comprobante)
-        url_comprobante = None
-        if imagen_info:
-            try:
-                url_imagen_whatsapp = imagen_info.get("url")
-                whatsapp_token = os.getenv("WHATSAPP_TOKEN")
-                
-                if not url_imagen_whatsapp:
-                    raise Exception("No se recibió URL de la imagen")
-                
-                headers = {"Authorization": f"Bearer {whatsapp_token}"}
-                response = requests.get(url_imagen_whatsapp, headers=headers)
-                
-                if response.status_code == 200:
-                    public_id_gen = f"comprobante_{cliente.id}_{int(datetime.datetime.now().timestamp())}"
-                    resultado_cloudinary = subir_imagen_desde_bytes(
-                        response.content, 
-                        public_id=public_id_gen
-                    )
-                    
-                    if resultado_cloudinary:
-                        url_comprobante = resultado_cloudinary["url"]
-                        datos_cliente = cliente.datos_estructurados or {}
-                        datos_cliente["ultimo_comprobante"] = {
-                            "url": url_comprobante,
-                            "fecha": str(datetime.datetime.now()),
-                            "estado_pago": "pendiente",
-                            "tipo": imagen_info["mime_type"]
-                        }
-                        cliente.datos_estructurados = datos_cliente
-                        db.commit()
-                        
-                        # Enviar notificación al dueño con botones
-                        if empresa.telefono_dueño:
-                            texto_cabecera = (
-                                f"🔔 *NUEVO COMPROBANTE*\n\n"
-                                f"*Cliente:* {cliente.nombre or 'Desconocido'}\n"
-                                f"*Teléfono:* {cliente.telefono}\n"
-                                f"*Comprobante:* {url_comprobante}"
-                            )
-                            enviar_mensaje_con_botones(
-                                telefono_destino=empresa.telefono_dueño,
-                                texto_cabecera=texto_cabecera,
-                                cliente_id=cliente.id
-                            )
-                else:
-                    print(f"❌ Falló descarga de Meta: {response.status_code}")
-                        
-            except Exception as e:
-                print(f"❌ Error procesando imagen: {e}")
-        
-        # Guardar mensaje del cliente
         mensaje_cliente = Conversacion(
             cliente_id=cliente.id,
             mensaje=texto_mensaje,
@@ -249,27 +124,193 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         db.add(mensaje_cliente)
         db.commit()
         
-        # Inicializar servicios
+        # Inicializar RAG
         rag = RAGService(db, empresa.id, cliente.id)
         memoria = MemoriaService(db, cliente.id)
         
-        # RAG y generación de respuesta
-        resumen_cliente = memoria.obtener_resumen()
-        documentos_relevantes = rag.buscar_similares(texto_mensaje, top_k=3)
-        contexto = "\n\n".join([doc["texto"] for doc in documentos_relevantes])
+        # ==============================================
+        # DECLARAR VARIABLES CON VALORES POR DEFECTO
+        # ==============================================
+        email = None
+        fecha = None
+        hora = None
+        nombre = None
+        booking_id = None
+        historial = ""
         
-        respuesta_texto = rag.generar_respuesta_llm(
-            consulta=texto_mensaje,
-            contexto=contexto,
-            resumen_cliente=resumen_cliente
-        )
+        # ==============================================
+        # PRIORIDAD: VERIFICAR FLUJO ACTIVO PRIMERO
+        # ==============================================
+        if cliente.id in agendamientos_temp and agendamientos_temp[cliente.id].get("flow") in ["CANCELAR", "REAGENDAR"]:
+            flow = agendamientos_temp[cliente.id].get("flow")
+            print(f"🔍 [FLUJO ACTIVO] {flow} - procesando sin RAG")
+            
+            if flow == "CANCELAR":
+                respuesta_texto, agendamientos_temp = await manejar_cancelacion(
+                    cliente_id=cliente.id,
+                    email=email,
+                    texto_mensaje=texto_mensaje,
+                    fecha=fecha,
+                    cliente=cliente,
+                    db=db,
+                    rag=rag,
+                    historial=historial,
+                    agendamientos_temp=agendamientos_temp
+                )
+            elif flow == "REAGENDAR":
+                respuesta_texto, agendamientos_temp = await manejar_reagendamiento(
+                    cliente_id=cliente.id,
+                    email=email,
+                    texto_mensaje=texto_mensaje,
+                    fecha=fecha,
+                    hora=hora,
+                    cliente=cliente,
+                    db=db,
+                    rag=rag,
+                    historial=historial,
+                    booking_id=booking_id,
+                    agendamientos_temp=agendamientos_temp
+                )
+            
+            if respuesta_texto:
+                print(f"🔍 [RESPUESTA] {respuesta_texto[:100]}...")
+                mensaje_bot = Conversacion(
+                    cliente_id=cliente.id,
+                    mensaje=respuesta_texto,
+                    emisor=TipoEmisor.BOT
+                )
+                db.add(mensaje_bot)
+                db.commit()
+                enviar_mensaje_whatsapp(
+                    telefono_destino=telefono_cliente,
+                    mensaje=respuesta_texto
+                )
+                memoria.actualizar_resumen(texto_mensaje, respuesta_texto)
+                return {"status": "ok", "cliente_id": cliente.id}
         
-        if imagen_info:
-            respuesta_texto = "✅ ¡Gracias por enviar tu comprobante! Hemos notificado al asesor. En breve recibirás la confirmación. 😊"
-        elif audio_url:
-            respuesta_texto = f"🎤 He recibido tu audio. {respuesta_texto}"
+        # ==============================================
+        # SI NO HAY FLUJO ACTIVO, CLASIFICAR CON RAG
+        # ==============================================
+        historial_mensajes = db.query(Conversacion).filter(
+            Conversacion.cliente_id == cliente.id
+        ).order_by(Conversacion.timestamp.desc()).limit(5).all()
+        historial_mensajes.reverse()
+        historial = "\n".join([f"{m.emisor.value}: {m.mensaje}" for m in historial_mensajes])
         
-        # Guardar respuesta del bot
+        analisis = rag.extraer_intencion_y_fecha(texto_mensaje, historial)
+        print(f"🔍 [ANÁLISIS] {analisis}")
+        
+        intencion = analisis.get("intencion", "OTRO")
+        fecha = analisis.get("fecha")
+        hora = analisis.get("hora")
+        nombre = analisis.get("nombre")
+        booking_id = analisis.get("booking_id")
+        email = extraer_email(texto_mensaje)
+        
+        respuesta_texto = ""
+        
+        # ==============================================
+        # ORQUESTACIÓN DE HANDLERS
+        # ==============================================
+        if intencion == "HORARIOS" and fecha:
+            respuesta_texto = await manejar_horarios(fecha)
+        
+        elif intencion == "CONSULTAR_CITAS":
+            email_cliente = None
+            if email:
+                email_cliente = email
+            elif cliente.datos_estructurados and cliente.datos_estructurados.get("email"):
+                email_cliente = cliente.datos_estructurados.get("email")
+            else:
+                if cliente.id not in agendamientos_temp:
+                    agendamientos_temp[cliente.id] = {"esperando_email_consulta": True}
+                respuesta_texto = "Para consultar tus citas, necesito tu correo electrónico. ¿Cuál es tu email?"
+            
+            if email_cliente:
+                if not cliente.datos_estructurados or not cliente.datos_estructurados.get("email"):
+                    if not cliente.datos_estructurados:
+                        cliente.datos_estructurados = {}
+                    cliente.datos_estructurados["email"] = email_cliente
+                    db.add(cliente)
+                    db.commit()
+                
+                citas_resultado = obtener_citas_cliente(email_cliente)
+                if citas_resultado.get("exito"):
+                    citas = citas_resultado.get("citas", [])
+                    if citas:
+                        agendamientos_temp[cliente.id] = {"citas": citas, "email": email_cliente}
+                        lista_citas = []
+                        for i, cita in enumerate(citas, 1):
+                            fecha_iso = cita["fecha"]
+                            fecha_obj = datetime.datetime.fromisoformat(fecha_iso)
+                            fecha_legible = fecha_obj.strftime("%d/%m/%Y")
+                            hora_legible = fecha_obj.strftime("%H:%M")
+                            lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible}")
+                        respuesta_texto = "📋 *Tus citas agendadas:*\n\n" + "\n".join(lista_citas)
+                        respuesta_texto += "\n\n¿Qué deseas hacer? Responde 'cancelar 1' o 'reagendar 1' (ej: 'cancelar 1' o 'reagendar 1')."
+                    else:
+                        respuesta_texto = "No tienes citas futuras agendadas."
+                else:
+                    respuesta_texto = f"No pude consultar tus citas: {citas_resultado.get('error')}. Por favor, intenta de nuevo más tarde."
+        
+        elif intencion == "AGENDAR" or (cliente.id in agendamientos_temp and agendamientos_temp[cliente.id].get("activo")):
+            respuesta_texto, agendamientos_temp = await manejar_agendamiento(
+                cliente_id=cliente.id,
+                nombre=nombre,
+                fecha=fecha,
+                hora=hora,
+                email=email,
+                texto_mensaje=texto_mensaje,
+                rag=rag,
+                historial=historial,
+                agendamientos_temp=agendamientos_temp
+            )
+        
+        elif intencion == "CANCELAR":
+            respuesta_texto, agendamientos_temp = await manejar_cancelacion(
+                cliente_id=cliente.id,
+                email=email,
+                texto_mensaje=texto_mensaje,
+                fecha=fecha,
+                cliente=cliente,
+                db=db,
+                rag=rag,
+                historial=historial,
+                agendamientos_temp=agendamientos_temp
+            )
+        
+        elif intencion == "REAGENDAR":
+            respuesta_texto, agendamientos_temp = await manejar_reagendamiento(
+                cliente_id=cliente.id,
+                email=email,
+                texto_mensaje=texto_mensaje,
+                fecha=fecha,
+                hora=hora,
+                cliente=cliente,
+                db=db,
+                rag=rag,
+                historial=historial,
+                booking_id=booking_id,
+                agendamientos_temp=agendamientos_temp
+            )
+        
+        else:
+            documentos = rag.buscar_similares(texto_mensaje, top_k=3)
+            contexto = "\n\n".join([doc["texto"] for doc in documentos])
+            resumen = memoria.obtener_resumen()
+            respuesta_texto = rag.generar_respuesta_con_texto(
+                consulta=texto_mensaje,
+                contexto=contexto,
+                resumen_cliente=resumen
+            )
+            if audio_url:
+                respuesta_texto = f"🎤 He recibido tu audio. {respuesta_texto}"
+        
+        if not respuesta_texto:
+            respuesta_texto = "¿En qué puedo ayudarte?"
+        
+        print(f"🔍 [RESPUESTA] {respuesta_texto[:100]}...")
+        
         mensaje_bot = Conversacion(
             cliente_id=cliente.id,
             mensaje=respuesta_texto,
@@ -278,34 +319,28 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         db.add(mensaje_bot)
         db.commit()
         
-        # Enviar respuesta al cliente
         enviar_mensaje_whatsapp(
             telefono_destino=telefono_cliente,
             mensaje=respuesta_texto
         )
         
-        # Actualizar memoria
         memoria.actualizar_resumen(texto_mensaje, respuesta_texto)
         
         return {"status": "ok", "cliente_id": cliente.id}
         
     except Exception as e:
-        print(f"❌ Error procesando webhook: {str(e)}")
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
 @router.get("/webhook")
 async def verificar_webhook(request: Request):
-    """
-    Endpoint para verificación inicial del webhook de Meta
-    """
     params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
-    
     verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "mi_token_secreto")
-    
     if mode == "subscribe" and token == verify_token:
         return int(challenge)
-    
     raise HTTPException(status_code=403, detail="Verificación fallida")
