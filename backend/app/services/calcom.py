@@ -349,3 +349,4 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
         "mensaje": "Cita reagendada exitosamente",
         "nueva_cita": resultado_agendar.get("data")
     }
+

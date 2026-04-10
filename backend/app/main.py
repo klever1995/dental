@@ -1,27 +1,29 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.base import engine, Base
-from app.api.v1.endpoints import empresas, documentos, whatsapp 
-from app.models import empresa, cliente, conversacion, documento 
+from app.api.v1.endpoints import empresas, documentos, whatsapp, usuarios, calcom
+from app.models import empresa, cliente, conversacion, documento, usuarios as usuario_modelo
 
 # Crear las tablas en la base de datos
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Chatbot Sublimados API")
 
-# Configuración de CORS
+# Configuración de CORS (agrega el puerto de tu frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Orígenes permitidos
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:3001"],  # 🔥 Agrega el puerto de React
     allow_credentials=True,
-    allow_methods=["*"],  # Permitir todos los métodos (GET, POST, etc.)
-    allow_headers=["*"],  # Permitir todos los headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Incluir routers
 app.include_router(empresas.router, prefix="/api/v1")
-app.include_router(documentos.router, prefix="/api/v1") 
+app.include_router(documentos.router, prefix="/api/v1")
 app.include_router(whatsapp.router, prefix="/api/v1")
+app.include_router(usuarios.router, prefix="/api/v1")
+app.include_router(calcom.router, prefix="/api/v1")  # 🔥 NUEVO
 
 @app.get("/")
 def read_root():
