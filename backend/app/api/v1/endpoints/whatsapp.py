@@ -11,7 +11,7 @@ from app.models.conversacion import Conversacion, TipoEmisor
 from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
 from app.services.whatsapp_sender import enviar_mensaje_whatsapp
-from app.services.calcom import obtener_slots_disponibles, agendar_cita, obtener_citas_cliente, eliminar_cita, reagendar_cita
+from app.services.calcom import obtener_slots_disponibles, agendar_cita, obtener_citas_cliente_por_cedula, eliminar_cita, reagendar_cita
 from app.handlers.horarios_handler import manejar_horarios
 from app.handlers.agendamiento_handler import manejar_agendamiento
 from app.handlers.cancelacion_handler import manejar_cancelacion
@@ -42,9 +42,10 @@ def transcribir_audio(url_audio: str) -> str:
         print(f"❌ Error en transcripción: {e}")
         return "[Error al transcribir el audio]"
 
-def extraer_email(mensaje: str) -> str:
-    match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', mensaje)
-    return match.group(0) if match else None
+def extraer_cedula(mensaje: str) -> str:
+    """Extrae un número de cédula de 6 a 10 dígitos del mensaje"""
+    match = re.search(r'\b(\d{6,10})\b', mensaje)
+    return match.group(1) if match else None
 
 @router.post("/webhook")
 async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
@@ -60,8 +61,17 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             return {"status": "ok", "message": "Sin mensajes"}
         
         print("📩 Mensaje recibido:", body)
+        print(f"🔍 [ORIGEN] User-Agent: {request.headers.get('user-agent', '')} | IP: {request.client.host}")
         
         msg = messages[0]
+        print(f"📌 [TIMESTAMP] {msg.get('timestamp')} - Texto: {msg.get('text', {}).get('body', '')[:50]}")
+        
+        timestamp_msg = int(msg.get("timestamp", 0))
+        timestamp_actual = int(datetime.datetime.now().timestamp())
+        if timestamp_actual - timestamp_msg > 30:
+            print(f"⏰ Mensaje antiguo ignorado: timestamp={timestamp_msg}, actual={timestamp_actual}")
+            return {"status": "ok", "message": "Mensaje antiguo ignorado"}
+        
         telefono_cliente = msg.get("from")
         tipo_mensaje = msg.get("type", "text")
         texto_mensaje = ""
@@ -124,13 +134,9 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         db.add(mensaje_cliente)
         db.commit()
         
-        # Inicializar RAG
         rag = RAGService(db, empresa.id, cliente.id)
         memoria = MemoriaService(db, cliente.id)
         
-        # ==============================================
-        # DECLARAR VARIABLES CON VALORES POR DEFECTO
-        # ==============================================
         email = None
         fecha = None
         hora = None
@@ -138,9 +144,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         booking_id = None
         historial = ""
         
-        # ==============================================
-        # PRIORIDAD: VERIFICAR FLUJO ACTIVO PRIMERO
-        # ==============================================
         if cliente.id in agendamientos_temp and agendamientos_temp[cliente.id].get("flow") in ["CANCELAR", "REAGENDAR"]:
             flow = agendamientos_temp[cliente.id].get("flow")
             print(f"🔍 [FLUJO ACTIVO] {flow} - procesando sin RAG")
@@ -188,9 +191,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                 memoria.actualizar_resumen(texto_mensaje, respuesta_texto)
                 return {"status": "ok", "cliente_id": cliente.id}
         
-        # ==============================================
-        # SI NO HAY FLUJO ACTIVO, CLASIFICAR CON RAG
-        # ==============================================
         historial_mensajes = db.query(Conversacion).filter(
             Conversacion.cliente_id == cliente.id
         ).order_by(Conversacion.timestamp.desc()).limit(5).all()
@@ -205,40 +205,42 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         hora = analisis.get("hora")
         nombre = analisis.get("nombre")
         booking_id = analisis.get("booking_id")
-        email = extraer_email(texto_mensaje)
         
         respuesta_texto = ""
         
-        # ==============================================
-        # ORQUESTACIÓN DE HANDLERS
-        # ==============================================
         if intencion == "HORARIOS" and fecha:
             respuesta_texto = await manejar_horarios(fecha)
         
+        # ==============================================
+        # CONSULTAR CITAS POR CÉDULA (migrado)
+        # ==============================================
         elif intencion == "CONSULTAR_CITAS":
-            email_cliente = None
-            if email:
-                email_cliente = email
-            elif cliente.datos_estructurados and cliente.datos_estructurados.get("email"):
-                email_cliente = cliente.datos_estructurados.get("email")
+            cedula_cliente = None
+            # Intentar extraer cédula del mensaje
+            cedula_match = re.search(r'\b(\d{6,10})\b', texto_mensaje)
+            if cedula_match:
+                cedula_cliente = cedula_match.group(1)
+            elif cliente.datos_estructurados and cliente.datos_estructurados.get("cedula"):
+                cedula_cliente = cliente.datos_estructurados.get("cedula")
             else:
                 if cliente.id not in agendamientos_temp:
-                    agendamientos_temp[cliente.id] = {"esperando_email_consulta": True}
-                respuesta_texto = "Para consultar tus citas, necesito tu correo electrónico. ¿Cuál es tu email?"
+                    agendamientos_temp[cliente.id] = {"esperando_cedula_consulta": True}
+                respuesta_texto = "Para consultar tus citas, necesito tu número de cédula. ¿Cuál es tu cédula?"
             
-            if email_cliente:
-                if not cliente.datos_estructurados or not cliente.datos_estructurados.get("email"):
+            if cedula_cliente:
+                if not cliente.datos_estructurados or not cliente.datos_estructurados.get("cedula"):
                     if not cliente.datos_estructurados:
                         cliente.datos_estructurados = {}
-                    cliente.datos_estructurados["email"] = email_cliente
+                    cliente.datos_estructurados["cedula"] = cedula_cliente
                     db.add(cliente)
                     db.commit()
                 
-                citas_resultado = obtener_citas_cliente(email_cliente)
+                # Usar la nueva función por cédula
+                citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente)
                 if citas_resultado.get("exito"):
                     citas = citas_resultado.get("citas", [])
                     if citas:
-                        agendamientos_temp[cliente.id] = {"citas": citas, "email": email_cliente}
+                        agendamientos_temp[cliente.id] = {"citas": citas, "cedula": cedula_cliente}
                         lista_citas = []
                         for i, cita in enumerate(citas, 1):
                             fecha_iso = cita["fecha"]

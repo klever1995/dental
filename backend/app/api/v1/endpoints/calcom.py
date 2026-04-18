@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Form, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -9,12 +9,7 @@ import os
 from app.db.base import get_db
 from app.models.usuarios import Usuario
 from app.api.v1.endpoints.usuarios import get_current_active_user
-from app.services.calcom import (
-    obtener_slots_disponibles,
-    agendar_cita,
-    eliminar_cita,
-    reagendar_cita,
-)
+from app.socket_manager import emitir_cita_actualizada
 
 router = APIRouter(prefix="/citas", tags=["citas"])
 
@@ -44,6 +39,10 @@ def listar_todas_citas(
             
             citas_formateadas = []
             for booking in bookings:
+                # 🔥 OBTENER TELÉFONO DESDE ATTENDEES
+                attendees = booking.get("attendees", [])
+                telefono = attendees[0].get("phoneNumber") if attendees else None
+                
                 cita = {
                     "booking_id": booking.get("id"),
                     "uid": booking.get("uid"),
@@ -54,17 +53,24 @@ def listar_todas_citas(
                     "created_at": booking.get("createdAt"),
                     "updated_at": booking.get("updatedAt"),
                     "cliente_nombre": None,
-                    "cliente_email": None
+                    "cliente_email": None,
+                    "cedula": None,
+                    "telefono": telefono  # 🔥 NUEVO CAMPO
                 }
                 
-                attendees = booking.get("attendees", [])
                 if attendees:
                     cita["cliente_nombre"] = attendees[0].get("name")
                     cita["cliente_email"] = attendees[0].get("email")
-                else:
-                    responses = booking.get("responses", {})
+                
+                responses = booking.get("responses", {})
+                
+                if not cita["cliente_nombre"]:
                     cita["cliente_nombre"] = responses.get("name")
+                
+                if not cita["cliente_email"]:
                     cita["cliente_email"] = responses.get("email")
+                
+                cita["cedula"] = responses.get("cedula")
                 
                 citas_formateadas.append(cita)
             
@@ -170,6 +176,8 @@ def consultar_slots(
 def agendar_cita_desde_panel(
     cliente_nombre: str = Form(...),
     cliente_email: str = Form(...),
+    cliente_cedula: str = Form(...),
+    cliente_telefono: str = Form(...),  # 🔥 NUEVO CAMPO
     fecha: str = Form(...),
     hora: str = Form(...),
     current_user: Usuario = Depends(get_current_active_user)
@@ -202,7 +210,11 @@ def agendar_cita_desde_panel(
         "attendee": {
             "name": cliente_nombre,
             "email": cliente_email,
-            "timeZone": TIMEZONE
+            "timeZone": TIMEZONE,
+            "phoneNumber": cliente_telefono  # 🔥 CAMPO NATIVO PARA TELÉFONO
+        },
+        "bookingFieldsResponses": {
+            "cedula": cliente_cedula
         }
     }
     
@@ -261,11 +273,12 @@ def cancelar_cita(
 # Endpoint para reagendar cita
 @router.put("/{booking_uid}/reagendar")
 def reagendar_cita_desde_panel(
-    booking_uid: str,  # Cambiado a string para recibir el UID
+    booking_uid: str,
     nueva_fecha: str = Form(...),
     nueva_hora: str = Form(...),
     cliente_nombre: str = Form(...),
     cliente_email: str = Form(...),
+    cliente_telefono: str = Form(...),  # Se recibe pero no se usa (solo por consistencia)
     current_user: Usuario = Depends(get_current_active_user)
 ):
     """
@@ -274,7 +287,6 @@ def reagendar_cita_desde_panel(
     """
     ecuador = pytz.timezone(TIMEZONE)
     
-    # Construir fecha/hora en UTC
     try:
         fecha_hora = datetime.strptime(f"{nueva_fecha} {nueva_hora}", "%Y-%m-%d %H:%M")
         if fecha_hora.tzinfo is None:
@@ -286,8 +298,7 @@ def reagendar_cita_desde_panel(
             detail=f"Formato de fecha/hora inválido: {str(e)}"
         )
     
-    # Llamar a la API de Cal.com v2 para reagendar usando el UID
-    url = f"https://api.cal.com/v2/bookings/{booking_uid}/reschedule"  # Ahora usa booking_uid
+    url = f"https://api.cal.com/v2/bookings/{booking_uid}/reschedule"
     headers = {
         "Authorization": f"Bearer {CALCOM_API_KEY}",
         "Content-Type": "application/json",
@@ -438,3 +449,149 @@ def obtener_estadisticas(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error en la consulta: {str(e)}"
         )
+    
+# Endpoint para webhook de Cal.com (notificaciones en tiempo real)
+@router.post("/webhook/calcom")
+async def webhook_calcom(request: Request):
+    """
+    Recibe notificaciones de Cal.com cuando ocurren cambios en reservas.
+    Luego emite evento vía WebSocket para actualizar el frontend.
+    """
+    # 1. Obtener el payload
+    try:
+        payload = await request.json()
+        print(f"📨 [WEBHOOK] Payload recibido: {payload}")
+    except Exception as e:
+        print(f"❌ [WEBHOOK] Error al leer JSON: {str(e)}")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    # 2. Procesar evento (CORREGIDO: usar triggerEvent y payload)
+    event = payload.get("triggerEvent")  # ✅ Cambiado de "event"
+    booking_data = payload.get("payload", {})  # ✅ Cambiado de "data.booking"
+    booking_uid = booking_data.get("uid")
+    event_type_id = booking_data.get("eventTypeId")
+    
+    print(f"🔍 [WEBHOOK] Evento: {event}, Booking UID: {booking_uid}, EventTypeId: {event_type_id}")
+    
+    if event in ["BOOKING_CREATED", "BOOKING_CANCELLED", "BOOKING_RESCHEDULED"]:
+        # Determinar empresa_id según event_type_id (ajusta según tus empresas)
+        empresa_id = 1  # Por defecto
+        if event_type_id == 1288606:  # Tu event type actual
+            empresa_id = 1
+        # Agrega más mapeos si tienes otras empresas con diferentes eventTypeId
+        
+        cita_data = {
+            "evento": event,
+            "booking_uid": booking_uid,
+            "booking": booking_data
+        }
+        
+        print(f"📡 [WEBHOOK] Intentando emitir evento a sala empresa_{empresa_id}")
+        print(f"📡 [WEBHOOK] Datos a emitir: {cita_data}")
+        
+        try:
+            await emitir_cita_actualizada(cita_data, empresa_id)
+            print(f"✅ [WEBHOOK] Evento emitido correctamente para cita {booking_uid}")
+        except Exception as e:
+            print(f"❌ [WEBHOOK] Error al emitir evento WebSocket: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"⚠️ [WEBHOOK] Evento no relevante: {event}")
+    
+    return {"status": "ok", "evento_recibido": event}    
+
+@router.get("/historial/{cedula}")
+def historial_citas_cliente(
+    cedula: str,
+    fecha_desde: Optional[str] = None,
+    fecha_hasta: Optional[str] = None,
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    event_type_id = 1288606
+    ecuador = pytz.timezone("America/Guayaquil")
+    
+    url = f"https://api.cal.com/v2/bookings?eventTypeId={event_type_id}&status=past"
+    headers = {
+        "Authorization": f"Bearer {CALCOM_API_KEY}",
+        "Content-Type": "application/json",
+        "cal-api-version": "2024-08-13"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Error de API: {response.status_code} - {response.text}")
+        
+        data = response.json()
+        if isinstance(data.get("data"), list):
+            bookings = data.get("data")
+        else:
+            bookings = data.get("data", {}).get("bookings", [])
+        
+        citas_pasadas = []
+        for booking in bookings:
+            responses = booking.get("responses") or booking.get("bookingFieldsResponses") or {}
+            cedula_booking = None
+            if isinstance(responses, dict):
+                cedula_booking = responses.get("cedula") or responses.get("Cédula")
+                if isinstance(cedula_booking, dict):
+                    cedula_booking = cedula_booking.get("value")
+            elif isinstance(responses, list):
+                for item in responses:
+                    if isinstance(item, dict):
+                        key = item.get("label") or item.get("key") or item.get("name")
+                        if key and key.lower() == "cedula":
+                            cedula_booking = item.get("value")
+                            break
+            
+            if not cedula_booking or str(cedula_booking) != str(cedula):
+                continue
+            
+            start_utc = datetime.fromisoformat(booking.get("start").replace("Z", "+00:00"))
+            if start_utc.tzinfo is None:
+                start_utc = pytz.utc.localize(start_utc)
+            start_local = start_utc.astimezone(ecuador)
+            
+            # 🔥 FILTRO DE FECHAS OPCIONAL
+            if fecha_desde:
+                fecha_desde_dt = datetime.strptime(fecha_desde, "%Y-%m-%d").replace(tzinfo=ecuador)
+                if start_local < fecha_desde_dt:
+                    continue
+            if fecha_hasta:
+                fecha_hasta_dt = datetime.strptime(fecha_hasta, "%Y-%m-%d").replace(tzinfo=ecuador)
+                if start_local > fecha_hasta_dt:
+                    continue
+            
+            end_utc = datetime.fromisoformat(booking.get("end").replace("Z", "+00:00"))
+            if end_utc.tzinfo is None:
+                end_utc = pytz.utc.localize(end_utc)
+            end_local = end_utc.astimezone(ecuador)
+            
+            attendees = booking.get("attendees", [])
+            telefono = attendees[0].get("phoneNumber") if attendees else None
+            nombre = attendees[0].get("name") if attendees else None
+            email = attendees[0].get("email") if attendees else None
+            
+            citas_pasadas.append({
+                "booking_id": booking.get("id"),
+                "uid": booking.get("uid"),
+                "start_time": start_local.isoformat(),
+                "end_time": end_local.isoformat(),
+                "status": booking.get("status"),
+                "cancellationReason": booking.get("cancellationReason"),
+                "rescheduledFromUid": booking.get("rescheduledFromUid"),
+                "cliente_nombre": nombre,
+                "cliente_email": email,
+                "cedula": cedula_booking,
+                "telefono": telefono,
+            })
+        
+        return {
+            "cedula": cedula,
+            "total": len(citas_pasadas),
+            "citas": citas_pasadas
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")

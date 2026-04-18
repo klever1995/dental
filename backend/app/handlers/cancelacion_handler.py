@@ -1,6 +1,6 @@
 import re
 import datetime
-from app.services.calcom import obtener_citas_cliente, eliminar_cita
+from app.services.calcom import obtener_citas_cliente_por_cedula, eliminar_cita
 
 async def manejar_cancelacion(
     cliente_id: int,
@@ -23,10 +23,9 @@ async def manejar_cancelacion(
     # INICIALIZAR O RECUPERAR ESTADO
     # ==============================================
     if cliente_id not in agendamientos_temp or agendamientos_temp[cliente_id].get("flow") != "CANCELAR":
-        # Nuevo flujo de cancelación
         agendamientos_temp[cliente_id] = {
             "flow": "CANCELAR",
-            "step": "esperando_email",
+            "step": "esperando_cedula",  # 🔥 CAMBIADO: antes era "esperando_email"
             "data": {}
         }
     
@@ -34,46 +33,44 @@ async def manejar_cancelacion(
     step = estado.get("step")
     
     # ==============================================
-    # PASO 1: ESPERANDO EMAIL
+    # PASO 1: ESPERANDO CÉDULA (antes email)
     # ==============================================
-    if step == "esperando_email":
-        email_cliente = None
+    if step == "esperando_cedula":
+        cedula_cliente = None
         
-        # Intentar extraer email con regex
-        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', texto_mensaje)
-        if email_match:
-            email_cliente = email_match.group(0)
-        elif email:
-            email_cliente = email
-        elif cliente.datos_estructurados and cliente.datos_estructurados.get("email"):
-            email_cliente = cliente.datos_estructurados.get("email")
+        # Intentar extraer cédula del texto (números de 6 a 10 dígitos)
+        cedula_match = re.search(r'\b(\d{6,10})\b', texto_mensaje)
+        if cedula_match:
+            cedula_cliente = cedula_match.group(1)
+        elif cliente.datos_estructurados and cliente.datos_estructurados.get("cedula"):
+            cedula_cliente = cliente.datos_estructurados.get("cedula")
         
-        if not email_cliente:
+        if not cedula_cliente:
             # Clasificar si el mensaje es una interrupción
-            clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "email", historial)
+            clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "cedula", historial)
             if not clasificacion.get("es_valido"):
-                respuesta_texto = clasificacion.get("respuesta_rag", "No entendí tu correo.")
-                respuesta_texto += "\n\nPara cancelar una cita, necesito tu correo electrónico. ¿Cuál es tu email?"
+                respuesta_texto = clasificacion.get("respuesta_rag", "No entendí tu cédula.")
+                respuesta_texto += "\n\nPara cancelar una cita, necesito tu número de cédula. ¿Cuál es tu cédula?"
                 return respuesta_texto, agendamientos_temp
             else:
-                email_cliente = clasificacion.get("dato_extraido")
+                cedula_cliente = clasificacion.get("dato_extraido")
         
-        if email_cliente:
-            # Guardar email en cliente
+        if cedula_cliente:
+            # Guardar cédula en cliente
             if not cliente.datos_estructurados:
                 cliente.datos_estructurados = {}
-            cliente.datos_estructurados["email"] = email_cliente
+            cliente.datos_estructurados["cedula"] = cedula_cliente
             db.add(cliente)
             db.commit()
             
-            # Consultar citas
-            citas_resultado = obtener_citas_cliente(email_cliente)
+            # Consultar citas por cédula
+            citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente)  # 🔥 NUEVA FUNCIÓN
             if citas_resultado.get("exito"):
                 citas = citas_resultado.get("citas", [])
                 if citas:
                     estado["step"] = "mostrando_citas"
                     estado["data"]["citas"] = citas
-                    estado["data"]["email"] = email_cliente
+                    estado["data"]["cedula"] = cedula_cliente
                     lista_citas = []
                     for i, cita in enumerate(citas, 1):
                         fecha_iso = cita["fecha"]
@@ -90,7 +87,7 @@ async def manejar_cancelacion(
                 respuesta_texto = f"No pude consultar tus citas: {citas_resultado.get('error')}. Por favor, intenta de nuevo más tarde."
                 del agendamientos_temp[cliente_id]
         else:
-            respuesta_texto = "No entendí tu correo. Por favor, ingresa un correo electrónico válido (ej: nombre@dominio.com)."
+            respuesta_texto = "No entendí tu cédula. Por favor, ingresa un número de cédula válido (solo números)."
         
         return respuesta_texto, agendamientos_temp
     
@@ -100,7 +97,6 @@ async def manejar_cancelacion(
     if step == "mostrando_citas":
         citas = estado["data"].get("citas", [])
         
-        # Verificar si el mensaje es un número de cita válido
         match_num = re.search(r'(\d+)', texto_mensaje)
         if match_num:
             idx = int(match_num.group(1)) - 1
@@ -117,7 +113,6 @@ async def manejar_cancelacion(
                 respuesta_texto = f"Número inválido. Responde con el número de la cita (1, 2, 3...)."
                 return respuesta_texto, agendamientos_temp
         
-        # Si no es un número, clasificar como interrupción
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "numero_cita", historial)
         if not clasificacion.get("es_valido"):
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu consulta.")

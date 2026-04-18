@@ -126,7 +126,7 @@ def obtener_slots_disponibles(
             "mensaje": f"Error en la consulta: {str(e)}"
         }
 
-def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, hora: datetime) -> dict:
+def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, cliente_cedula: str, cliente_telefono: str, hora: datetime) -> dict:
     import requests
     import pytz
 
@@ -135,6 +135,14 @@ def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, ho
             "exito": False,
             "error": "Se requiere una hora específica"
         }
+
+    # 🔥 FORMATEAR TELÉFONO: agregar '+' si no tiene
+    if cliente_telefono:
+        cliente_telefono = str(cliente_telefono).strip()
+        if not cliente_telefono.startswith("+"):
+            cliente_telefono = f"+{cliente_telefono}"
+    else:
+        cliente_telefono = None  # O puedes asignar un valor por defecto o dejar vacío
 
     # Zona horaria Ecuador
     ecuador = pytz.timezone("America/Guayaquil")
@@ -152,16 +160,22 @@ def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, ho
         "cal-api-version": "2024-08-13"
     }
 
-    # ✅ PAYLOAD CORRECTO (según tu error 400)
     data = {
         "start": hora_utc.isoformat(),
         "eventTypeId": event_type_id,
-        "attendee": {   # 🔥 singular, no lista
+        "attendee": {
             "name": cliente_nombre,
             "email": cliente_email,
             "timeZone": "America/Guayaquil"
+        },
+        "bookingFieldsResponses": {
+            "cedula": cliente_cedula
         }
     }
+
+    # 🔥 SOLO AGREGAR phoneNumber SI EL TELÉFONO NO ES NINGUNO
+    if cliente_telefono:
+        data["attendee"]["phoneNumber"] = cliente_telefono
 
     try:
         response = requests.post(url, headers=headers, json=data, timeout=10)
@@ -180,99 +194,163 @@ def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, ho
                 "error": f"Error {response.status_code}",
                 "detalles": response.text
             }
-
     except Exception as e:
         return {
             "exito": False,
             "error": str(e)
         }
     
-def obtener_citas_cliente(email: str) -> dict:
-    url = "https://api.cal.com/v1/bookings"
+def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
+    import requests
+    from datetime import datetime
+    import pytz
+
+    url = "https://api.cal.com/v2/bookings"
+
+    headers = {
+        "Authorization": f"Bearer {CALCOM_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
     params = {
-        "apiKey": CALCOM_API_KEY,
-        "attendeeEmail": email
+        "eventTypeId": 1288606
     }
 
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
 
-        if response.status_code == 200:
-            data = response.json()
-
-            citas = []
-            ahora = datetime.now(pytz.utc)  # 👈 CAMBIADO: ahora usa pytz.utc
-            ecuador = pytz.timezone("America/Guayaquil")  # 👈 NUEVO: zona horaria local
-
-            bookings = data.get("bookings", data)
-
-            for booking in bookings:
-
-                fecha_str = booking.get("startTime") or booking.get("start")
-                if not fecha_str:
-                    continue
-
-                # Convertir a datetime con zona horaria UTC
-                fecha_utc = datetime.fromisoformat(
-                    fecha_str.replace("Z", "+00:00")
-                )
-
-                # Asegurar que tenga zona horaria (por si acaso)
-                if fecha_utc.tzinfo is None:
-                    fecha_utc = pytz.utc.localize(fecha_utc)
-
-                # Convertir a hora local de Ecuador
-                fecha_local = fecha_utc.astimezone(ecuador)
-
-                # solo citas futuras (comparar en UTC para evitar errores)
-                if fecha_utc >= ahora and booking.get("status") != "CANCELLED":
-                    citas.append({
-                        "booking_id": booking.get("id"),
-                        # 👇 GUARDAMOS LA FECHA EN FORMATO LOCAL ISO
-                        "fecha": fecha_local.isoformat(),
-                        "estado": booking.get("status"),
-                        "event_type_id": booking.get("eventTypeId"),
-                        "asistentes": booking.get("attendees", [])
-                    })
-
-            return {
-                "exito": True,
-                "citas": citas
-            }
-
-        else:
+        if response.status_code != 200:
             return {
                 "exito": False,
                 "error": f"Error {response.status_code}",
                 "detalles": response.text
             }
 
+        data = response.json()
+        bookings = data.get("data", {}).get("bookings", [])
+
+        citas = []
+        ahora = datetime.now(pytz.utc)
+        ecuador = pytz.timezone("America/Guayaquil")
+
+        for booking in bookings:
+            # Extraer cédula desde bookingFieldsResponses o responses
+            responses = booking.get("responses", {}) or booking.get("bookingFieldsResponses", {})
+            cedula_booking = str(responses.get("cedula") or responses.get("Cédula") or "").strip()
+            print("DEBUG →", cedula_booking, "==", cedula)
+
+            if cedula_booking != str(cedula).strip():
+                continue
+
+            fecha_str = booking.get("startTime")
+            if not fecha_str:
+                continue
+
+            fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
+            if fecha_utc.tzinfo is None:
+                fecha_utc = pytz.utc.localize(fecha_utc)
+
+            fecha_local = fecha_utc.astimezone(ecuador)
+
+            # 🔥 EXTRAER TELÉFONO (campo nativo en attendee)
+            attendees = booking.get("attendees", [])
+            telefono = attendees[0].get("phoneNumber") if attendees else None
+
+            if fecha_utc >= ahora and booking.get("status") != "CANCELLED":
+                citas.append({
+                    "booking_id": booking.get("id"),
+                    "uid": booking.get("uid"),
+                    "fecha": fecha_local.isoformat(),
+                    "estado": booking.get("status"),
+                    "event_type_id": booking.get("eventType", {}).get("id"),
+                    "cedula": cedula_booking,
+                    "telefono": telefono,  # 🔥 NUEVO CAMPO
+                    "asistentes": attendees
+                })
+
+        return {
+            "exito": True,
+            "citas": citas
+        }
+
     except Exception as e:
         return {
             "exito": False,
             "error": str(e)
-        }    
-
-def eliminar_cita(booking_id: int) -> dict:
-    """
-    Elimina una cita existente usando API v1
-    """
-    url = f"https://api.cal.com/v1/bookings/{booking_id}"
-    params = {"apiKey": CALCOM_API_KEY}
-    response = requests.delete(url, params=params)
-    print(f"🔍 RESPUESTA CRUDA DE CAL.COM AL ELIMINAR: {response.status_code} - {response.text}")
-    
-    if response.status_code in [200, 204]:
-        return {"exito": True}
-    else:
-        return {
-            "exito": False,
-            "error": f"Error {response.status_code}",
-            "detalles": response.json()
         }
 
-def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cliente_email: str, nueva_fecha: str, nueva_hora: str) -> dict:
+def eliminar_cita(booking_id: int) -> dict:
+    import requests
+
+    event_type_id = 1288606  # 🔥 mismo que usas en todo tu sistema
+
+    # 1. Obtener todas las citas para encontrar el UID
+    url_list = f"https://api.cal.com/v2/bookings?eventTypeId={event_type_id}"
+    headers = {
+        "Authorization": f"Bearer {CALCOM_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.get(url_list, headers=headers, timeout=10)
+
+        if response.status_code != 200:
+            return {
+                "exito": False,
+                "error": f"Error al obtener citas: {response.status_code}",
+                "detalles": response.text
+            }
+
+        data = response.json()
+        bookings = data.get("data", {}).get("bookings", [])
+
+        # 2. Buscar el booking por ID
+        booking_uid = None
+        for booking in bookings:
+            if booking.get("id") == booking_id:
+                booking_uid = booking.get("uid")
+                break
+
+        if not booking_uid:
+            return {
+                "exito": False,
+                "error": "No se encontró la cita con ese booking_id"
+            }
+
+        # 3. Cancelar usando UID (v2)
+        url_cancel = f"https://api.cal.com/v2/bookings/{booking_uid}/cancel"
+        headers_cancel = {
+            "Authorization": f"Bearer {CALCOM_API_KEY}",
+            "Content-Type": "application/json",
+            "cal-api-version": "2024-08-13"
+        }
+
+        data_cancel = {
+            "cancellationReason": "Cancelado desde sistema"
+        }
+
+        response_cancel = requests.post(
+            url_cancel, headers=headers_cancel, json=data_cancel, timeout=10
+        )
+
+        print(f"🔍 RESPUESTA CRUDA DE CAL.COM AL ELIMINAR: {response_cancel.status_code} - {response_cancel.text}")
+
+        if response_cancel.status_code in [200, 204]:
+            return {"exito": True}
+        else:
+            return {
+                "exito": False,
+                "error": f"Error {response_cancel.status_code}",
+                "detalles": response_cancel.text
+            }
+
+    except Exception as e:
+        return {
+            "exito": False,
+            "error": str(e)
+        }
+
+def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cliente_email: str, cliente_cedula: str, cliente_telefono: str, nueva_fecha: str, nueva_hora: str) -> dict:
     """
     Reagenda una cita: verifica disponibilidad, cancela la original y crea una nueva.
     
@@ -281,6 +359,8 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
         event_type_id: ID del tipo de evento
         cliente_nombre: Nombre del cliente
         cliente_email: Email del cliente
+        cliente_cedula: Cédula del cliente
+        cliente_telefono: Teléfono del cliente
         nueva_fecha: Nueva fecha en formato 'YYYY-MM-DD'
         nueva_hora: Nueva hora en formato 'HH:MM'
     
@@ -291,7 +371,6 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
     # 1. Verificar disponibilidad de la nueva fecha/hora
     ecuador = pytz.timezone("America/Guayaquil")
     
-    # Consultar slots disponibles para la nueva fecha
     slots_resultado = obtener_slots_disponibles(
         event_type_id=event_type_id,
         fecha_inicio=nueva_fecha,
@@ -305,7 +384,6 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
             "detalles": slots_resultado.get("mensaje")
         }
     
-    # Verificar si la hora solicitada está disponible
     horas_disponibles = slots_resultado.get("slots_por_fecha", {}).get(nueva_fecha, [])
     if nueva_hora not in horas_disponibles:
         return {
@@ -328,16 +406,17 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
             "detalles": resultado_eliminar
         }
     
-    # 4. Agendar la nueva cita
+    # 4. Agendar la nueva cita (incluyendo cédula y teléfono)
     resultado_agendar = agendar_cita(
         event_type_id=event_type_id,
         cliente_nombre=cliente_nombre,
         cliente_email=cliente_email,
+        cliente_cedula=cliente_cedula,
+        cliente_telefono=cliente_telefono,  # 🔥 NUEVO
         hora=nueva_hora_dt
     )
     
     if not resultado_agendar["exito"]:
-        # Si falla el agendamiento, la cita original ya se perdió (riesgo asumido)
         return {
             "exito": False,
             "error": "La cita original se canceló, pero no se pudo agendar la nueva",
@@ -349,4 +428,3 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
         "mensaje": "Cita reagendada exitosamente",
         "nueva_cita": resultado_agendar.get("data")
     }
-

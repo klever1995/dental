@@ -1,6 +1,6 @@
 import re
 import datetime
-from app.services.calcom import obtener_citas_cliente, obtener_slots_disponibles, reagendar_cita
+from app.services.calcom import obtener_citas_cliente_por_cedula, obtener_slots_disponibles, reagendar_cita
 
 async def manejar_reagendamiento(
     cliente_id: int,
@@ -27,7 +27,7 @@ async def manejar_reagendamiento(
     if cliente_id not in agendamientos_temp or agendamientos_temp[cliente_id].get("flow") != "REAGENDAR":
         agendamientos_temp[cliente_id] = {
             "flow": "REAGENDAR",
-            "step": "esperando_email",
+            "step": "esperando_cedula",
             "data": {}
         }
     
@@ -35,42 +35,40 @@ async def manejar_reagendamiento(
     step = estado.get("step")
     
     # ==============================================
-    # PASO 1: ESPERANDO EMAIL
+    # PASO 1: ESPERANDO CÉDULA
     # ==============================================
-    if step == "esperando_email":
-        email_cliente = None
+    if step == "esperando_cedula":
+        cedula_cliente = None
         
-        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', texto_mensaje)
-        if email_match:
-            email_cliente = email_match.group(0)
-        elif email:
-            email_cliente = email
-        elif cliente.datos_estructurados and cliente.datos_estructurados.get("email"):
-            email_cliente = cliente.datos_estructurados.get("email")
+        cedula_match = re.search(r'\b(\d{6,10})\b', texto_mensaje)
+        if cedula_match:
+            cedula_cliente = cedula_match.group(1)
+        elif cliente.datos_estructurados and cliente.datos_estructurados.get("cedula"):
+            cedula_cliente = cliente.datos_estructurados.get("cedula")
         
-        if not email_cliente:
-            clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "email", historial)
+        if not cedula_cliente:
+            clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "cedula", historial)
             if not clasificacion.get("es_valido"):
-                respuesta_texto = clasificacion.get("respuesta_rag", "No entendí tu correo.")
-                respuesta_texto += "\n\nPara reagendar una cita, necesito tu correo electrónico. ¿Cuál es tu email?"
+                respuesta_texto = clasificacion.get("respuesta_rag", "No entendí tu cédula.")
+                respuesta_texto += "\n\nPara reagendar una cita, necesito tu número de cédula. ¿Cuál es tu cédula?"
                 return respuesta_texto, agendamientos_temp
             else:
-                email_cliente = clasificacion.get("dato_extraido")
+                cedula_cliente = clasificacion.get("dato_extraido")
         
-        if email_cliente:
+        if cedula_cliente:
             if not cliente.datos_estructurados:
                 cliente.datos_estructurados = {}
-            cliente.datos_estructurados["email"] = email_cliente
+            cliente.datos_estructurados["cedula"] = cedula_cliente
             db.add(cliente)
             db.commit()
             
-            citas_resultado = obtener_citas_cliente(email_cliente)
+            citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente)
             if citas_resultado.get("exito"):
                 citas = citas_resultado.get("citas", [])
                 if citas:
                     estado["step"] = "mostrando_citas"
                     estado["data"]["citas"] = citas
-                    estado["data"]["email"] = email_cliente
+                    estado["data"]["cedula"] = cedula_cliente
                     lista_citas = []
                     for i, cita in enumerate(citas, 1):
                         fecha_iso = cita["fecha"]
@@ -87,7 +85,7 @@ async def manejar_reagendamiento(
                 respuesta_texto = f"No pude consultar tus citas: {citas_resultado.get('error')}. Por favor, intenta de nuevo más tarde."
                 del agendamientos_temp[cliente_id]
         else:
-            respuesta_texto = "No entendí tu correo. Por favor, ingresa un correo electrónico válido (ej: nombre@dominio.com)."
+            respuesta_texto = "No entendí tu cédula. Por favor, ingresa un número de cédula válido (solo números)."
         
         return respuesta_texto, agendamientos_temp
     
@@ -104,12 +102,16 @@ async def manejar_reagendamiento(
                 cita_seleccionada = citas[idx]
                 booking_id_original = cita_seleccionada["booking_id"]
                 cliente_nombre = cita_seleccionada.get("asistentes", [{}])[0].get("name", "Cliente")
-                cliente_email = estado["data"].get("email")
+                cliente_email = cita_seleccionada.get("asistentes", [{}])[0].get("email", "")
+                cliente_cedula = estado["data"].get("cedula")
+                cliente_telefono = cita_seleccionada.get("asistentes", [{}])[0].get("phoneNumber")  # 🔥 NUEVO: teléfono
                 
                 estado["step"] = "esperando_nueva_fecha"
                 estado["data"]["reagendar_booking_id"] = booking_id_original
                 estado["data"]["reagendar_nombre"] = cliente_nombre
                 estado["data"]["reagendar_email"] = cliente_email
+                estado["data"]["reagendar_cedula"] = cliente_cedula
+                estado["data"]["reagendar_telefono"] = cliente_telefono  # 🔥 GUARDAR TELÉFONO
                 respuesta_texto = "Perfecto. ¿Para qué nueva fecha y hora deseas reagendar la cita? (ej: 'mañana a las 11:00' o '7 de abril a las 12:00')"
                 return respuesta_texto, agendamientos_temp
             else:
@@ -134,24 +136,19 @@ async def manejar_reagendamiento(
         return respuesta_texto, agendamientos_temp
     
     # ==============================================
-    # PASO 3: ESPERANDO NUEVA FECHA Y HORA (con manejo de desvíos)
+    # PASO 3: ESPERANDO NUEVA FECHA Y HORA
     # ==============================================
     if step == "esperando_nueva_fecha":
-        # Primero, verificar si el mensaje es una interrupción (pregunta fuera del flujo)
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "fecha_hora", historial)
-        
-        # Si es una interrupción, responder con RAG y repetir la pregunta
         if not clasificacion.get("es_valido"):
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu consulta.")
             respuesta_texto = f"{respuesta_rag}\n\nPerfecto. ¿Para qué nueva fecha y hora deseas reagendar la cita? (ej: 'mañana a las 11:00' o '7 de abril a las 12:00')"
             return respuesta_texto, agendamientos_temp
         
-        # Si no es interrupción, continuar con el procesamiento normal
         analisis_fecha = rag.extraer_intencion_y_fecha(texto_mensaje, historial)
         nueva_fecha = analisis_fecha.get("fecha")
         nueva_hora = analisis_fecha.get("hora")
         
-        # CASO 1: El usuario dio fecha y hora completas
         if nueva_fecha and nueva_hora:
             slots_resultado = obtener_slots_disponibles(
                 event_type_id=1288606,
@@ -164,12 +161,16 @@ async def manejar_reagendamiento(
                     booking_id_original = estado["data"].get("reagendar_booking_id")
                     cliente_nombre = estado["data"].get("reagendar_nombre")
                     cliente_email = estado["data"].get("reagendar_email")
+                    cliente_cedula = estado["data"].get("reagendar_cedula")
+                    cliente_telefono = estado["data"].get("reagendar_telefono")  # 🔥 OBTENER TELÉFONO
                     
                     resultado = reagendar_cita(
                         booking_id=booking_id_original,
                         event_type_id=1288606,
                         cliente_nombre=cliente_nombre,
                         cliente_email=cliente_email,
+                        cliente_cedula=cliente_cedula,
+                        cliente_telefono=cliente_telefono,  # 🔥 NUEVO PARÁMETRO
                         nueva_fecha=nueva_fecha,
                         nueva_hora=nueva_hora
                     )
@@ -187,10 +188,8 @@ async def manejar_reagendamiento(
             else:
                 respuesta_texto = f"No encontré horarios disponibles para {nueva_fecha}. Por favor, elige otra fecha."
         
-        # CASO 2: El usuario dio solo una fecha (sin hora)
         elif nueva_fecha and not nueva_hora:
             estado["data"]["fecha_seleccionada"] = nueva_fecha
-            
             slots_resultado = obtener_slots_disponibles(
                 event_type_id=1288606,
                 fecha_inicio=nueva_fecha,
@@ -206,7 +205,6 @@ async def manejar_reagendamiento(
             else:
                 respuesta_texto = f"No encontré horarios disponibles para esa fecha. Por favor, elige otra fecha."
         
-        # CASO 3: El usuario dio solo una hora (sin fecha)
         elif not nueva_fecha and nueva_hora:
             fecha_guardada = estado["data"].get("fecha_seleccionada")
             if fecha_guardada:
@@ -221,12 +219,16 @@ async def manejar_reagendamiento(
                         booking_id_original = estado["data"].get("reagendar_booking_id")
                         cliente_nombre = estado["data"].get("reagendar_nombre")
                         cliente_email = estado["data"].get("reagendar_email")
+                        cliente_cedula = estado["data"].get("reagendar_cedula")
+                        cliente_telefono = estado["data"].get("reagendar_telefono")
                         
                         resultado = reagendar_cita(
                             booking_id=booking_id_original,
                             event_type_id=1288606,
                             cliente_nombre=cliente_nombre,
                             cliente_email=cliente_email,
+                            cliente_cedula=cliente_cedula,
+                            cliente_telefono=cliente_telefono,
                             nueva_fecha=fecha_guardada,
                             nueva_hora=nueva_hora
                         )
@@ -246,8 +248,6 @@ async def manejar_reagendamiento(
                     estado["data"]["fecha_seleccionada"] = None
             else:
                 respuesta_texto = "Primero indícame la fecha para la cita (ej: 'miércoles', 'mañana', '10 de abril')."
-        
-        # CASO 4: El usuario dio algo que no es fecha ni hora
         else:
             respuesta_texto = "No entendí la fecha y hora. Por favor, indícame la nueva fecha y hora (ej: 'mañana a las 11:00' o '7 de abril a las 12:00')."
         
