@@ -66,13 +66,12 @@ Analiza el siguiente mensaje y devuelve SOLO un JSON con estos campos:
     "booking_id": null o número entero (si el usuario menciona un ID de cita)
 }}
 
-- "HORARIOS": si el usuario pregunta por disponibilidad de horarios (ej: "qué horarios tienes el martes", "tienes cita el lunes")
-- "AGENDAR": si el usuario quiere agendar una cita explícitamente
-- "CANCELAR": si el usuario quiere cancelar una cita existente (ej: "quiero cancelar mi cita", "cancelar", "no voy a poder ir")
-- "REAGENDAR": si el usuario quiere reagendar/cambiar/mover una cita existente (ej: "quiero reagendar mi cita", "cambiar mi cita", "mover la cita del 6 de abril")
-- "CONSULTAR_CITAS": si el usuario pregunta por sus citas agendadas (ej: "tengo citas agendadas?", "ver mis citas", "qué citas tengo")
-- "INFO": si pregunta por información general (precios, ubicación, etc.)
-- "OTRO": cualquier otra cosa
+REGLAS IMPORTANTES PARA EXTRACCIÓN DE NOMBRE:
+- SOLO extrae un nombre si es claramente un nombre propio de persona (ej: "Klever Robalino", "Ana", "Juan Pérez").
+- NO extraigas como nombre palabras como: "abuela", "mamá", "papá", "tío", "mi hermano", "esposa", "hijo", "yo", "para mí", "mi", "ella", "él".
+- Si el usuario dice "para mi abuela", "para mi mamá", "quiero agendar para mi hijo", el campo "nombre" DEBE ser null.
+- Si el usuario dice "soy Klever" o "me llamo Ana", ahí SÍ extrae el nombre.
+- Si el usuario da un nombre y una relación familiar (ej: "mi abuela se llama Rosa"), extrae "Rosa" como nombre.
 
 Para fechas, entiende expresiones como:
 - "martes de la próxima semana" → calcula la fecha exacta

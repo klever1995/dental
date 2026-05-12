@@ -39,7 +39,6 @@ def listar_todas_citas(
             
             citas_formateadas = []
             for booking in bookings:
-                # 🔥 OBTENER TELÉFONO DESDE ATTENDEES
                 attendees = booking.get("attendees", [])
                 telefono = attendees[0].get("phoneNumber") if attendees else None
                 
@@ -55,7 +54,8 @@ def listar_todas_citas(
                     "cliente_nombre": None,
                     "cliente_email": None,
                     "cedula": None,
-                    "telefono": telefono  # 🔥 NUEVO CAMPO
+                    "telefono": telefono,
+                    "notas": None  # 🔥 NUEVO CAMPO
                 }
                 
                 if attendees:
@@ -71,6 +71,7 @@ def listar_todas_citas(
                     cita["cliente_email"] = responses.get("email")
                 
                 cita["cedula"] = responses.get("cedula")
+                cita["notas"] = responses.get("notes")  # 🔥 EXTRAER NOTAS
                 
                 citas_formateadas.append(cita)
             
@@ -177,7 +178,8 @@ def agendar_cita_desde_panel(
     cliente_nombre: str = Form(...),
     cliente_email: str = Form(...),
     cliente_cedula: str = Form(...),
-    cliente_telefono: str = Form(...),  # 🔥 NUEVO CAMPO
+    cliente_telefono: str = Form(...),
+    cliente_notas: str = Form(None),  # 🔥 NUEVO CAMPO (opcional)
     fecha: str = Form(...),
     hora: str = Form(...),
     current_user: Usuario = Depends(get_current_active_user)
@@ -185,7 +187,6 @@ def agendar_cita_desde_panel(
     event_type_id = 1288606
     ecuador = pytz.timezone(TIMEZONE)
     
-    # Validar y construir fecha/hora
     try:
         fecha_hora = datetime.strptime(f"{fecha} {hora}", "%Y-%m-%d %H:%M")
         if fecha_hora.tzinfo is None:
@@ -197,7 +198,6 @@ def agendar_cita_desde_panel(
             detail=f"Formato de fecha/hora inválido: {str(e)}"
         )
     
-    # Llamar a la API de Cal.com
     url = "https://api.cal.com/v2/bookings"
     headers = {
         "Authorization": f"Bearer {CALCOM_API_KEY}",
@@ -211,12 +211,16 @@ def agendar_cita_desde_panel(
             "name": cliente_nombre,
             "email": cliente_email,
             "timeZone": TIMEZONE,
-            "phoneNumber": cliente_telefono  # 🔥 CAMPO NATIVO PARA TELÉFONO
+            "phoneNumber": cliente_telefono
         },
         "bookingFieldsResponses": {
             "cedula": cliente_cedula
         }
     }
+    
+    # 🔥 AGREGAR NOTAS SI VIENEN
+    if cliente_notas:
+        data["bookingFieldsResponses"]["notes"] = cliente_notas
     
     try:
         response = requests.post(url, headers=headers, json=data, timeout=10)
@@ -278,7 +282,7 @@ def reagendar_cita_desde_panel(
     nueva_hora: str = Form(...),
     cliente_nombre: str = Form(...),
     cliente_email: str = Form(...),
-    cliente_telefono: str = Form(...),  # Se recibe pero no se usa (solo por consistencia)
+    cliente_telefono: str = Form(...),  
     current_user: Usuario = Depends(get_current_active_user)
 ):
     """
@@ -533,16 +537,21 @@ def historial_citas_cliente(
         for booking in bookings:
             responses = booking.get("responses") or booking.get("bookingFieldsResponses") or {}
             cedula_booking = None
+            notas = None  # 🔥 NUEVO
             if isinstance(responses, dict):
                 cedula_booking = responses.get("cedula") or responses.get("Cédula")
                 if isinstance(cedula_booking, dict):
                     cedula_booking = cedula_booking.get("value")
+                notas = responses.get("notes")  # 🔥 EXTRAER NOTAS
             elif isinstance(responses, list):
                 for item in responses:
                     if isinstance(item, dict):
                         key = item.get("label") or item.get("key") or item.get("name")
                         if key and key.lower() == "cedula":
                             cedula_booking = item.get("value")
+                        if key and key.lower() == "notes":
+                            notas = item.get("value")
+                        if cedula_booking and notas:
                             break
             
             if not cedula_booking or str(cedula_booking) != str(cedula):
@@ -553,7 +562,6 @@ def historial_citas_cliente(
                 start_utc = pytz.utc.localize(start_utc)
             start_local = start_utc.astimezone(ecuador)
             
-            # 🔥 FILTRO DE FECHAS OPCIONAL
             if fecha_desde:
                 fecha_desde_dt = datetime.strptime(fecha_desde, "%Y-%m-%d").replace(tzinfo=ecuador)
                 if start_local < fecha_desde_dt:
@@ -585,6 +593,7 @@ def historial_citas_cliente(
                 "cliente_email": email,
                 "cedula": cedula_booking,
                 "telefono": telefono,
+                "notas": notas  # 🔥 NUEVO CAMPO
             })
         
         return {

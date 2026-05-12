@@ -126,7 +126,7 @@ def obtener_slots_disponibles(
             "mensaje": f"Error en la consulta: {str(e)}"
         }
 
-def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, cliente_cedula: str, cliente_telefono: str, hora: datetime) -> dict:
+def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, cliente_cedula: str, cliente_telefono: str, hora: datetime, notas_adicionales: str = None) -> dict:
     import requests
     import pytz
 
@@ -142,7 +142,7 @@ def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, cl
         if not cliente_telefono.startswith("+"):
             cliente_telefono = f"+{cliente_telefono}"
     else:
-        cliente_telefono = None  # O puedes asignar un valor por defecto o dejar vacío
+        cliente_telefono = None
 
     # Zona horaria Ecuador
     ecuador = pytz.timezone("America/Guayaquil")
@@ -173,7 +173,11 @@ def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, cl
         }
     }
 
-    # 🔥 SOLO AGREGAR phoneNumber SI EL TELÉFONO NO ES NINGUNO
+    # 🔥 AGREGAR NOTAS ADICIONALES SI EXISTEN
+    if notas_adicionales:
+        data["bookingFieldsResponses"]["notes"] = notas_adicionales
+
+    # 🔥 AGREGAR TELÉFONO SI EXISTE
     if cliente_telefono:
         data["attendee"]["phoneNumber"] = cliente_telefono
 
@@ -206,25 +210,16 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
     import pytz
 
     url = "https://api.cal.com/v2/bookings"
-
     headers = {
         "Authorization": f"Bearer {CALCOM_API_KEY}",
-        "Content-Type": "application/json"
+        "Type": "application/json"
     }
-
-    params = {
-        "eventTypeId": 1288606
-    }
+    params = {"eventTypeId": 1288606}
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
-
         if response.status_code != 200:
-            return {
-                "exito": False,
-                "error": f"Error {response.status_code}",
-                "detalles": response.text
-            }
+            return {"exito": False, "error": f"Error {response.status_code}", "detalles": response.text}
 
         data = response.json()
         bookings = data.get("data", {}).get("bookings", [])
@@ -234,11 +229,8 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
         ecuador = pytz.timezone("America/Guayaquil")
 
         for booking in bookings:
-            # Extraer cédula desde bookingFieldsResponses o responses
             responses = booking.get("responses", {}) or booking.get("bookingFieldsResponses", {})
             cedula_booking = str(responses.get("cedula") or responses.get("Cédula") or "").strip()
-            print("DEBUG →", cedula_booking, "==", cedula)
-
             if cedula_booking != str(cedula).strip():
                 continue
 
@@ -252,9 +244,9 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
 
             fecha_local = fecha_utc.astimezone(ecuador)
 
-            # 🔥 EXTRAER TELÉFONO (campo nativo en attendee)
             attendees = booking.get("attendees", [])
             telefono = attendees[0].get("phoneNumber") if attendees else None
+            notas = responses.get("notes")  # 🔥 AHORA SÍ, desde responses
 
             if fecha_utc >= ahora and booking.get("status") != "CANCELLED":
                 citas.append({
@@ -264,20 +256,14 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
                     "estado": booking.get("status"),
                     "event_type_id": booking.get("eventType", {}).get("id"),
                     "cedula": cedula_booking,
-                    "telefono": telefono,  # 🔥 NUEVO CAMPO
+                    "telefono": telefono,
+                    "notas": notas,
                     "asistentes": attendees
                 })
 
-        return {
-            "exito": True,
-            "citas": citas
-        }
-
+        return {"exito": True, "citas": citas}
     except Exception as e:
-        return {
-            "exito": False,
-            "error": str(e)
-        }
+        return {"exito": False, "error": str(e)}
 
 def eliminar_cita(booking_id: int) -> dict:
     import requests
@@ -368,6 +354,27 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
         dict: Resultado de la operación
     """
     
+    # 🔥 OBTENER NOTAS DE LA CITA ORIGINAL ANTES DE CANCELARLA
+    notas_originales = None
+    try:
+        url_list = f"https://api.cal.com/v2/bookings?eventTypeId={event_type_id}"
+        headers = {"Authorization": f"Bearer {CALCOM_API_KEY}"}
+        response = requests.get(url_list, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            bookings = data.get("data", {}).get("bookings", [])
+            for booking in bookings:
+                if booking.get("id") == booking_id:
+                    # Buscar notas en responses o bookingFieldsResponses
+                    responses = booking.get("responses", {})
+                    notas_originales = responses.get("notes")
+                    if not notas_originales:
+                        booking_fields = booking.get("bookingFieldsResponses", {})
+                        notas_originales = booking_fields.get("notes")
+                    break
+    except Exception as e:
+        print(f"⚠️ Error al obtener notas originales: {e}")
+    
     # 1. Verificar disponibilidad de la nueva fecha/hora
     ecuador = pytz.timezone("America/Guayaquil")
     
@@ -406,14 +413,15 @@ def reagendar_cita(booking_id: int, event_type_id: int, cliente_nombre: str, cli
             "detalles": resultado_eliminar
         }
     
-    # 4. Agendar la nueva cita (incluyendo cédula y teléfono)
+    # 4. Agendar la nueva cita (incluyendo cédula, teléfono y notas)
     resultado_agendar = agendar_cita(
         event_type_id=event_type_id,
         cliente_nombre=cliente_nombre,
         cliente_email=cliente_email,
         cliente_cedula=cliente_cedula,
-        cliente_telefono=cliente_telefono,  # 🔥 NUEVO
-        hora=nueva_hora_dt
+        cliente_telefono=cliente_telefono,
+        hora=nueva_hora_dt,
+        notas_adicionales=notas_originales  # 🔥 PASAR LAS NOTAS
     )
     
     if not resultado_agendar["exito"]:

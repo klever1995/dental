@@ -2,6 +2,11 @@ import datetime
 import pytz
 import re
 from app.services.calcom import obtener_slots_disponibles, agendar_cita
+from openai import OpenAI
+import os
+
+# Inicializar cliente de OpenAI
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 async def manejar_agendamiento(
     cliente_id: int,
@@ -51,13 +56,13 @@ async def manejar_agendamiento(
         if clasificacion.get("es_valido"):
             datos["nombre"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
-            return await manejar_agendamiento(
-                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp
-            )
+            # ✅ CORREGIDO: No llamar recursivamente, retornar pregunta siguiente
+            respuesta_texto = "Gracias. Por favor, ingresa tu número de cédula (solo números)."
+            return respuesta_texto, agendamientos_temp
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu nombre.")
-            respuesta_texto = f"{respuesta_rag}\n\nClaro, ¿cuál es tu nombre completo?"
-            return respuesta_texto, agendamientos_temp
+            # ✅ CORREGIDO: No concatenar texto extra, solo la respuesta RAG
+            return respuesta_rag, agendamientos_temp
     
     # ==============================================
     # PASO 2: PEDIR CÉDULA
@@ -68,13 +73,12 @@ async def manejar_agendamiento(
         if clasificacion.get("es_valido"):
             datos["cedula"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
-            return await manejar_agendamiento(
-                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp
-            )
+            # ✅ CORREGIDO: No llamar recursivamente
+            respuesta_texto = "Gracias. ¿Para qué día quieres la cita? (ej: mañana, lunes)"
+            return respuesta_texto, agendamientos_temp
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu cédula.")
-            respuesta_texto = f"{respuesta_rag}\n\nGracias {datos['nombre']}. Por favor, ingresa tu número de cédula (solo números)."
-            return respuesta_texto, agendamientos_temp
+            return respuesta_rag, agendamientos_temp
     
     # ==============================================
     # PASO 3: PEDIR FECHA
@@ -85,13 +89,12 @@ async def manejar_agendamiento(
         if clasificacion.get("es_valido"):
             datos["fecha"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
-            return await manejar_agendamiento(
-                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp
-            )
+            # ✅ CORREGIDO: No llamar recursivamente, continuar con la lógica de horarios
+            # Continuamos al siguiente paso (mostrar horarios) sin recursión
+            pass
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí la fecha.")
-            respuesta_texto = f"{respuesta_rag}\n\nGracias {datos['nombre']}. ¿Para qué día quieres la cita? (ej: mañana, lunes)"
-            return respuesta_texto, agendamientos_temp
+            return respuesta_rag, agendamientos_temp
     
     # ==============================================
     # PASO 4: PEDIR HORA (mostrar horarios disponibles)
@@ -176,7 +179,7 @@ async def manejar_agendamiento(
             return respuesta_texto, agendamientos_temp
     
     # ==============================================
-    # PASO 6: AGENDAR (con cédula y teléfono)
+    # PASO 6: AGENDAR
     # ==============================================
     try:
         ecuador = pytz.timezone("America/Guayaquil")
@@ -184,12 +187,38 @@ async def manejar_agendamiento(
         hora, minuto = map(int, datos["hora"].split(':'))
         fecha_hora_cita = ecuador.localize(datetime.datetime(año, mes, dia, hora, minuto))
         
-        # 🔥 OBTENER EL TELÉFONO DEL CLIENTE
         from app.models.cliente import Cliente
         from app.db.base import SessionLocal
         db = SessionLocal()
         cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
         telefono_cliente = cliente.telefono if cliente else None
+        
+        notas_adicionales = None
+        try:
+            if rag and cliente_id:
+                historial_completo = rag.obtener_historial_reciente(limite=20)
+                lineas = historial_completo.split("\n")
+                mensajes_cliente = [linea.replace("Cliente: ", "") for linea in lineas if linea.startswith("Cliente: ")]
+                historial_cliente = "\n".join(mensajes_cliente)
+                if historial_cliente.strip():
+                    prompt_resumen = f"""Extrae un resumen corto (máximo 200 caracteres) de lo que el cliente ha dicho sobre su problema dental o servicio requerido. Ignora saludos, despedidas y frases de agradecimiento. Si no hay información relevante, responde "Sin observaciones".
+
+                    Historial del cliente:
+                    {historial_cliente}
+
+                    Resumen:"""
+                    response = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": prompt_resumen}],
+                        temperature=0.3,
+                        max_tokens=100
+                    )
+                    notas_adicionales = response.choices[0].message.content.strip()
+                    if notas_adicionales == "Sin observaciones" or not notas_adicionales:
+                        notas_adicionales = None
+        except Exception as e:
+            print(f"⚠️ Error generando resumen: {e}")
+        
         db.close()
         
         resultado = agendar_cita(
@@ -197,13 +226,13 @@ async def manejar_agendamiento(
             cliente_nombre=datos["nombre"],
             cliente_email=datos["email"],
             cliente_cedula=datos["cedula"],
-            cliente_telefono=telefono_cliente,  # 🔥 NUEVO PARÁMETRO
-            hora=fecha_hora_cita
+            cliente_telefono=telefono_cliente,
+            hora=fecha_hora_cita,
+            notas_adicionales=notas_adicionales
         )
         
         if resultado.get("exito"):
             respuesta_texto = f"✅ ¡Cita agendada para {datos['fecha']} a las {datos['hora']}! Te enviaremos confirmación a {datos['email']}."
-            # Guardar cédula en el cliente
             db = SessionLocal()
             cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
             if cliente:
