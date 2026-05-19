@@ -169,6 +169,3 @@ async def manejar_cancelacion(
     respuesta_texto = "Ocurrió un error. Por favor, inicia de nuevo."
     del agendamientos_temp[cliente_id]
     return respuesta_texto, agendamientos_temp
-
-
-

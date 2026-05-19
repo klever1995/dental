@@ -1,9 +1,10 @@
 import datetime
 import pytz
 import re
-from app.services.calcom import obtener_slots_disponibles, agendar_cita
+from app.services.calcom import obtener_slots_disponibles, agendar_cita, obtener_citas_cliente_por_cedula
 from openai import OpenAI
 import os
+from sqlalchemy.orm import Session
 
 # Inicializar cliente de OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -17,17 +18,25 @@ async def manejar_agendamiento(
     texto_mensaje: str,
     rag,
     historial: str,
-    agendamientos_temp: dict
+    agendamientos_temp: dict,
+    especialidad: str = None
 ) -> tuple:
     """
     Maneja el flujo de agendamiento con manejo de interrupciones.
     Retorna (respuesta_texto, agendamientos_temp_actualizado)
     """
+    # Importar SessionLocal dentro de la función para evitar conflictos
+    from app.db.base import SessionLocal
+    from app.models.especialidad import Especialidad
+    from app.models.cliente import Cliente
+    
     # Obtener o crear datos temporales
     if cliente_id not in agendamientos_temp:
         agendamientos_temp[cliente_id] = {
             "nombre": nombre,
             "cedula": None,
+            "especialidad": especialidad,
+            "event_type_id": None,
             "fecha": fecha,
             "hora": hora,
             "email": email,
@@ -43,6 +52,8 @@ async def manejar_agendamiento(
             datos["hora"] = hora
         if email and not datos.get("email"):
             datos["email"] = email
+        if especialidad and not datos.get("especialidad"):
+            datos["especialidad"] = especialidad
     
     datos = agendamientos_temp[cliente_id]
     respuesta_texto = ""
@@ -56,12 +67,10 @@ async def manejar_agendamiento(
         if clasificacion.get("es_valido"):
             datos["nombre"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
-            # ✅ CORREGIDO: No llamar recursivamente, retornar pregunta siguiente
             respuesta_texto = "Gracias. Por favor, ingresa tu número de cédula (solo números)."
             return respuesta_texto, agendamientos_temp
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu nombre.")
-            # ✅ CORREGIDO: No concatenar texto extra, solo la respuesta RAG
             return respuesta_rag, agendamientos_temp
     
     # ==============================================
@@ -73,12 +82,62 @@ async def manejar_agendamiento(
         if clasificacion.get("es_valido"):
             datos["cedula"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
-            # ✅ CORREGIDO: No llamar recursivamente
-            respuesta_texto = "Gracias. ¿Para qué día quieres la cita? (ej: mañana, lunes)"
+            if datos.get("especialidad"):
+                respuesta_texto = "Gracias. ¿Para qué día quieres la cita? (ej: mañana, lunes)"
+            else:
+                # 🔥 CONSULTAR ESPECIALIDADES DESDE BASE DE DATOS
+                db_temp = SessionLocal()
+                especialidades_activas = db_temp.query(Especialidad).filter(
+                    Especialidad.activa == True,
+                    Especialidad.empresa_id == 1
+                ).all()
+                db_temp.close()
+                lista_especialidades = ", ".join([esp.nombre for esp in especialidades_activas])
+                respuesta_texto = f"Gracias. ¿Para qué especialidad necesitas la cita? ({lista_especialidades})"
             return respuesta_texto, agendamientos_temp
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu cédula.")
             return respuesta_rag, agendamientos_temp
+
+    # ==============================================
+    # PASO 2.5: PEDIR ESPECIALIDAD (solo si no vino del RAG)
+    # ==============================================
+    if not datos.get("especialidad"):
+        import unicodedata
+        
+        def quitar_tildes(texto: str) -> str:
+            return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+        
+        especialidad_detectada = None
+        texto_mensaje_normalizado = quitar_tildes(texto_mensaje.lower())
+        
+        db = SessionLocal()
+        especialidades_bd = db.query(Especialidad).filter(
+            Especialidad.activa == True,
+            Especialidad.empresa_id == 1
+        ).all()
+        db.close()
+        
+        especialidades_validas = []
+        for esp in especialidades_bd:
+            nombre_normalizado = quitar_tildes(esp.nombre.lower())
+            especialidades_validas.append((nombre_normalizado, esp.nombre, esp.event_type_id))
+        
+        for nombre_norm, nombre_original, event_id in especialidades_validas:
+            if nombre_norm in texto_mensaje_normalizado or texto_mensaje_normalizado in nombre_norm:
+                especialidad_detectada = nombre_original
+                datos["event_type_id"] = event_id
+                break
+        
+        if especialidad_detectada:
+            datos["especialidad"] = especialidad_detectada
+            agendamientos_temp[cliente_id] = datos
+            respuesta_texto = f"Perfecto, especialidad {especialidad_detectada}. ¿Para qué día quieres la cita? (ej: mañana, lunes)"
+            return respuesta_texto, agendamientos_temp
+        else:
+            lista_esps = ", ".join([esp.nombre for esp in especialidades_bd])
+            respuesta_texto = f"No entendí la especialidad. Las especialidades disponibles son: {lista_esps}. ¿Cuál necesitas?"
+            return respuesta_texto, agendamientos_temp
     
     # ==============================================
     # PASO 3: PEDIR FECHA
@@ -89,9 +148,6 @@ async def manejar_agendamiento(
         if clasificacion.get("es_valido"):
             datos["fecha"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
-            # ✅ CORREGIDO: No llamar recursivamente, continuar con la lógica de horarios
-            # Continuamos al siguiente paso (mostrar horarios) sin recursión
-            pass
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí la fecha.")
             return respuesta_rag, agendamientos_temp
@@ -101,16 +157,36 @@ async def manejar_agendamiento(
     # ==============================================
     if not datos.get("hora"):
         if "horas_disponibles" not in datos:
-            slots = obtener_slots_disponibles(event_type_id=1288606, fecha_inicio=datos["fecha"], dias_a_mostrar=1)
+            if not datos.get("event_type_id"):
+                db = SessionLocal()
+                esp_obj = db.query(Especialidad).filter(
+                    Especialidad.nombre.ilike(datos["especialidad"]),
+                    Especialidad.activa == True
+                ).first()
+                if esp_obj:
+                    datos["event_type_id"] = esp_obj.event_type_id
+                db.close()
+            
+            slots = obtener_slots_disponibles(
+                event_type_id=datos["event_type_id"],
+                fecha_inicio=datos["fecha"],
+                dias_a_mostrar=1
+            )
             if slots.get("exito") and slots.get("slots_por_fecha"):
-                horas = slots["slots_por_fecha"].get(datos["fecha"], [])
+                slots_dia = slots["slots_por_fecha"].get(datos["fecha"], [])
+                horas = []
+                for slot in slots_dia:
+                    if isinstance(slot, dict):
+                        horas.append(slot.get("hora"))
+                    else:
+                        horas.append(slot)
                 if horas:
                     datos["horas_disponibles"] = horas
                     agendamientos_temp[cliente_id] = datos
-                    respuesta_texto = f"Para {datos['fecha']} tenemos: {', '.join(horas)}. ¿Cuál prefieres?"
+                    respuesta_texto = f"Para {datos['fecha']} (especialidad {datos['especialidad']}) tenemos: {', '.join(horas)}. ¿Cuál prefieres?"
                     return respuesta_texto, agendamientos_temp
                 else:
-                    respuesta_texto = f"No hay horarios para {datos['fecha']}. ¿Otra fecha?"
+                    respuesta_texto = f"No hay horarios disponibles para {datos['fecha']} en {datos['especialidad']}. ¿Otra fecha?"
                     datos["fecha"] = None
                     agendamientos_temp[cliente_id] = datos
                     return respuesta_texto, agendamientos_temp
@@ -160,7 +236,7 @@ async def manejar_agendamiento(
             datos["email"] = email_match.group(0)
             agendamientos_temp[cliente_id] = datos
             return await manejar_agendamiento(
-                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp
+                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp, datos.get("especialidad")
             )
         
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "email", historial)
@@ -169,7 +245,7 @@ async def manejar_agendamiento(
             datos["email"] = clasificacion.get("dato_extraido")
             agendamientos_temp[cliente_id] = datos
             return await manejar_agendamiento(
-                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp
+                cliente_id, None, None, None, None, texto_mensaje, rag, historial, agendamientos_temp, datos.get("especialidad")
             )
         else:
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu correo.")
@@ -179,16 +255,35 @@ async def manejar_agendamiento(
             return respuesta_texto, agendamientos_temp
     
     # ==============================================
-    # PASO 6: AGENDAR
+    # PASO 6: VALIDAR UNICIDAD POR CÉDULA Y AGENDAR
     # ==============================================
     try:
+        cedula_actual = datos["cedula"]
+        fecha_seleccionada = datos["fecha"]
+        hora_seleccionada = datos["hora"]
+        
+        # 🔥 CORRECCIÓN: Llamar sin event_type_id para obtener todas las citas del cliente
+        citas_cliente = obtener_citas_cliente_por_cedula(cedula_actual)
+        if citas_cliente.get("exito"):
+            for cita in citas_cliente.get("citas", []):
+                fecha_cita_str = cita.get("fecha")
+                if fecha_cita_str:
+                    fecha_cita_obj = datetime.datetime.fromisoformat(fecha_cita_str)
+                    fecha_cita = fecha_cita_obj.strftime("%Y-%m-%d")
+                    hora_cita = fecha_cita_obj.strftime("%H:%M")
+                    
+                    if fecha_cita == fecha_seleccionada and hora_cita == hora_seleccionada:
+                        respuesta_texto = f"⚠️ Ya tienes una cita agendada para {fecha_seleccionada} a las {hora_seleccionada} con tu cédula {cedula_actual}. No puedes agendar dos citas a la misma hora. Por favor, elige otro horario."
+                        datos["hora"] = None
+                        datos["horas_disponibles"] = None
+                        agendamientos_temp[cliente_id] = datos
+                        return respuesta_texto, agendamientos_temp
+        
         ecuador = pytz.timezone("America/Guayaquil")
         año, mes, dia = map(int, datos["fecha"].split('-'))
         hora, minuto = map(int, datos["hora"].split(':'))
         fecha_hora_cita = ecuador.localize(datetime.datetime(año, mes, dia, hora, minuto))
         
-        from app.models.cliente import Cliente
-        from app.db.base import SessionLocal
         db = SessionLocal()
         cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
         telefono_cliente = cliente.telefono if cliente else None
@@ -222,7 +317,7 @@ async def manejar_agendamiento(
         db.close()
         
         resultado = agendar_cita(
-            event_type_id=1288606,
+            event_type_id=datos["event_type_id"],
             cliente_nombre=datos["nombre"],
             cliente_email=datos["email"],
             cliente_cedula=datos["cedula"],
@@ -232,7 +327,7 @@ async def manejar_agendamiento(
         )
         
         if resultado.get("exito"):
-            respuesta_texto = f"✅ ¡Cita agendada para {datos['fecha']} a las {datos['hora']}! Te enviaremos confirmación a {datos['email']}."
+            respuesta_texto = f"✅ ¡Cita agendada para {datos['fecha']} a las {datos['hora']} para {datos['especialidad']}! Te enviaremos confirmación a {datos['email']}."
             db = SessionLocal()
             cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
             if cliente:

@@ -1,25 +1,122 @@
 import os
-from openai import AzureOpenAI
+import requests
+from dotenv import load_dotenv
 
-# Crear cliente Azure OpenAI usando variables del .env
-client = AzureOpenAI(
-    api_key=os.getenv("AZURE_OPENAI_KEY"),
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_version=os.getenv("OPENAI_API_VERSION"),
-)
+# ==========================================
+# CARGAR .ENV
+# ==========================================
+load_dotenv()
+
+CALCOM_API_KEY = os.getenv("CALCOM_API_KEY")
+
+# ==========================================
+# VALIDAR API KEY
+# ==========================================
+if not CALCOM_API_KEY:
+
+    print("❌ CALCOM_API_KEY no encontrada")
+    exit()
+
+# ==========================================
+# ENDPOINT OFICIAL V2
+# ==========================================
+url = "https://api.cal.com/v2/event-types"
+
+# ==========================================
+# HEADERS
+# ==========================================
+headers = {
+    "Authorization": f"Bearer {CALCOM_API_KEY}",
+    "cal-api-version": "2024-06-14",
+    "Content-Type": "application/json"
+}
+
+# ==========================================
+# PARAMS
+# ==========================================
+params = {
+    "limit": 100
+}
 
 try:
-    print("🔎 Probando deployment de transcripción...")
 
-    # Solo hacemos una llamada mínima para ver si el deployment existe
-    response = client.audio.transcriptions.create(
-        model="gpt-4o-mini-transcribe",  # EXACTAMENTE como aparece en Azure
-        file=open("audio_prueba.ogg", "rb")  # pon aquí cualquier audio pequeño de prueba
+    print("\n🚀 CONSULTANDO EVENT TYPES...")
+    print("URL:", url)
+
+    response = requests.get(
+        url,
+        headers=headers,
+        params=params,
+        timeout=20
     )
 
-    print("✅ ÉXITO")
-    print("Texto transcrito:", response.text)
+    print("\n📡 STATUS:", response.status_code)
+
+    print("\n📡 RESPONSE:")
+    print(response.text)
+
+    # ==========================================
+    # ERROR
+    # ==========================================
+    if response.status_code != 200:
+
+        print("\n❌ ERROR CONSULTANDO EVENT TYPES")
+        exit()
+
+    # ==========================================
+    # JSON
+    # ==========================================
+    data = response.json()
+
+    eventos = data.get(
+        "data",
+        []
+    )
+
+    # ==========================================
+    # MOSTRAR EVENTOS
+    # ==========================================
+    print("\n===================================")
+    print("✅ EVENTOS ENCONTRADOS")
+    print("===================================\n")
+
+    if not eventos:
+
+        print("⚠️ No se encontraron eventos")
+        exit()
+
+    for evento in eventos:
+
+        print(f"🆔 ID: {evento.get('id')}")
+
+        print(
+            f"📌 TÍTULO: "
+            f"{evento.get('title')}"
+        )
+
+        print(
+            f"🔗 SLUG: "
+            f"{evento.get('slug')}"
+        )
+
+        print(
+            f"⏱️ DURACIÓN: "
+            f"{evento.get('length')} min"
+        )
+
+        print(
+            f"📝 DESCRIPCIÓN: "
+            f"{evento.get('description')}"
+        )
+
+        print(
+            f"🎨 COLOR: "
+            f"{evento.get('color')}"
+        )
+
+        print("-" * 50)
 
 except Exception as e:
-    print("❌ ERROR DETECTADO:")
+
+    print("\n❌ EXCEPCIÓN:")
     print(str(e))

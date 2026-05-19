@@ -205,11 +205,17 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         hora = analisis.get("hora")
         nombre = analisis.get("nombre")
         booking_id = analisis.get("booking_id")
+        especialidad = analisis.get("especialidad")  # 🔥 NUEVO: extraer especialidad
+        
+        # 🔥 NUEVO: Si el usuario mencionó una especialidad pero la intención es OTRO, forzamos AGENDAR
+        if intencion == "OTRO" and especialidad:
+            intencion = "AGENDAR"
+            print(f"🔄 [FORZADO] Intención cambiada a AGENDAR porque se detectó especialidad: {especialidad}")
         
         respuesta_texto = ""
         
         if intencion == "HORARIOS" and fecha:
-            respuesta_texto = await manejar_horarios(fecha)
+            respuesta_texto = await manejar_horarios(fecha, especialidad=especialidad)
         
         # ==============================================
         # CONSULTAR CITAS POR CÉDULA (migrado)
@@ -265,7 +271,8 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                 texto_mensaje=texto_mensaje,
                 rag=rag,
                 historial=historial,
-                agendamientos_temp=agendamientos_temp
+                agendamientos_temp=agendamientos_temp,
+                especialidad=especialidad  # 🔥 NUEVO: pasar especialidad al handler
             )
         
         elif intencion == "CANCELAR":

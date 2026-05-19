@@ -204,17 +204,21 @@ def agendar_cita(event_type_id: int, cliente_nombre: str, cliente_email: str, cl
             "error": str(e)
         }
     
-def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
-    import requests
-    from datetime import datetime
-    import pytz
+def obtener_citas_cliente_por_cedula(cedula: str, event_type_id: int = None) -> dict:
 
     url = "https://api.cal.com/v2/bookings"
     headers = {
         "Authorization": f"Bearer {CALCOM_API_KEY}",
-        "Type": "application/json"
+        "cal-api-version": "2024-08-13"
     }
-    params = {"eventTypeId": 1288606}
+    params = {
+        "status": "upcoming",
+        "take": 250
+    }
+    
+    # Solo agregar eventTypeId si se proporcionó
+    if event_type_id is not None:
+        params["eventTypeId"] = event_type_id
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
@@ -222,31 +226,62 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
             return {"exito": False, "error": f"Error {response.status_code}", "detalles": response.text}
 
         data = response.json()
-        bookings = data.get("data", {}).get("bookings", [])
+        # La respuesta puede ser {"data": [...]} o directamente una lista
+        if isinstance(data, dict) and "data" in data:
+            bookings = data["data"]
+            if isinstance(bookings, dict) and "bookings" in bookings:
+                bookings = bookings["bookings"]
+            elif isinstance(bookings, list):
+                bookings = bookings
+            else:
+                bookings = []
+        elif isinstance(data, list):
+            bookings = data
+        else:
+            bookings = []
 
         citas = []
         ahora = datetime.now(pytz.utc)
         ecuador = pytz.timezone("America/Guayaquil")
 
         for booking in bookings:
-            responses = booking.get("responses", {}) or booking.get("bookingFieldsResponses", {})
-            cedula_booking = str(responses.get("cedula") or responses.get("Cédula") or "").strip()
-            if cedula_booking != str(cedula).strip():
+            if not isinstance(booking, dict):
+                continue
+            
+            # Buscar cédula en attendees[0].bookingFieldsResponses
+            attendees = booking.get("attendees", [])
+            if attendees:
+                booking_fields = attendees[0].get("bookingFieldsResponses", {})
+                cedula_booking = str(booking_fields.get("cedula", "")).strip()
+            else:
+                # Si no hay attendees, buscar en responses
+                responses = booking.get("responses", {}) or booking.get("bookingFieldsResponses", {})
+                cedula_booking = str(responses.get("cedula") or responses.get("Cédula") or "").strip()
+            
+            if not cedula_booking or cedula_booking != str(cedula).strip():
                 continue
 
-            fecha_str = booking.get("startTime")
+            fecha_str = booking.get("startTime") or booking.get("start")
             if not fecha_str:
                 continue
 
-            fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
-            if fecha_utc.tzinfo is None:
-                fecha_utc = pytz.utc.localize(fecha_utc)
+            try:
+                fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
+                if fecha_utc.tzinfo is None:
+                    fecha_utc = pytz.utc.localize(fecha_utc)
+                fecha_local = fecha_utc.astimezone(ecuador)
+            except:
+                continue
 
-            fecha_local = fecha_utc.astimezone(ecuador)
-
-            attendees = booking.get("attendees", [])
-            telefono = attendees[0].get("phoneNumber") if attendees else None
-            notas = responses.get("notes")  # 🔥 AHORA SÍ, desde responses
+            telefono = None
+            notas = None
+            if attendees:
+                booking_fields = attendees[0].get("bookingFieldsResponses", {})
+                telefono = booking_fields.get("attendeePhoneNumber") or attendees[0].get("phoneNumber")
+                notas = booking_fields.get("notes")
+            if not notas:
+                responses = booking.get("responses", {}) or booking.get("bookingFieldsResponses", {})
+                notas = responses.get("notes")
 
             if fecha_utc >= ahora and booking.get("status") != "CANCELLED":
                 citas.append({
@@ -254,7 +289,7 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
                     "uid": booking.get("uid"),
                     "fecha": fecha_local.isoformat(),
                     "estado": booking.get("status"),
-                    "event_type_id": booking.get("eventType", {}).get("id"),
+                    "event_type_id": booking.get("eventTypeId") or booking.get("eventType", {}).get("id"),
                     "cedula": cedula_booking,
                     "telefono": telefono,
                     "notas": notas,
@@ -265,16 +300,15 @@ def obtener_citas_cliente_por_cedula(cedula: str) -> dict:
     except Exception as e:
         return {"exito": False, "error": str(e)}
 
-def eliminar_cita(booking_id: int) -> dict:
+def eliminar_cita(booking_id: int, event_type_id: int) -> dict:
     import requests
-
-    event_type_id = 1288606  # 🔥 mismo que usas en todo tu sistema
 
     # 1. Obtener todas las citas para encontrar el UID
     url_list = f"https://api.cal.com/v2/bookings?eventTypeId={event_type_id}"
     headers = {
         "Authorization": f"Bearer {CALCOM_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "cal-api-version": "2024-08-13"
     }
 
     try:
@@ -288,7 +322,19 @@ def eliminar_cita(booking_id: int) -> dict:
             }
 
         data = response.json()
-        bookings = data.get("data", {}).get("bookings", [])
+        # Manejar diferentes estructuras de respuesta
+        if isinstance(data, dict) and "data" in data:
+            bookings_data = data["data"]
+            if isinstance(bookings_data, dict) and "bookings" in bookings_data:
+                bookings = bookings_data["bookings"]
+            elif isinstance(bookings_data, list):
+                bookings = bookings_data
+            else:
+                bookings = []
+        elif isinstance(data, list):
+            bookings = data
+        else:
+            bookings = []
 
         # 2. Buscar el booking por ID
         booking_uid = None
@@ -319,7 +365,7 @@ def eliminar_cita(booking_id: int) -> dict:
             url_cancel, headers=headers_cancel, json=data_cancel, timeout=10
         )
 
-        print(f"🔍 RESPUESTA CRUDA DE CAL.COM AL ELIMINAR: {response_cancel.status_code} - {response_cancel.text}")
+        print(f"🔍 RESPUESTA DE CAL.COM AL ELIMINAR: {response_cancel.status_code} - {response_cancel.text}")
 
         if response_cancel.status_code in [200, 204]:
             return {"exito": True}
