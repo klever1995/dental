@@ -19,3 +19,7 @@ passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 email-validator
 python-socketio
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+apscheduler

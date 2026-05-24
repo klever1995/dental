@@ -2,6 +2,10 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
 from sqlalchemy.sql import func
 from app.db.base import Base
 
+# ==============================
+# Modelo Empresa
+# Representa cada negocio/cliente del sistema (multitenencia)
+# ==============================
 class Empresa(Base):
     __tablename__ = "empresas"
 

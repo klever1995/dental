@@ -4,6 +4,10 @@ from sqlalchemy.orm import relationship
 from app.db.base import Base
 from pgvector.sqlalchemy import Vector
 
+# ==============================
+# Modelo Documento
+# Almacena archivos subidos por la empresa (PDF, Word, etc.)
+# ==============================
 class Documento(Base):
     __tablename__ = "documentos"
 
@@ -13,10 +17,13 @@ class Documento(Base):
     hash_contenido = Column(String(64), unique=True)
     fecha_subida = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Relaciones
     empresa = relationship("Empresa", backref="documentos")
     chunks = relationship("ChunkDocumento", back_populates="documento", cascade="all, delete-orphan")
 
+# ==============================
+# Modelo ChunkDocumento
+# Fragmentos del documento con embeddings para búsqueda semántica
+# ==============================
 class ChunkDocumento(Base):
     __tablename__ = "chunks_documento"
 
@@ -24,7 +31,6 @@ class ChunkDocumento(Base):
     documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False)
     indice = Column(Integer, nullable=False)
     texto = Column(Text, nullable=False)
-    embedding = Column(Vector(1536))  # 1536 dimensiones para text-embedding-3-small
+    embedding = Column(Vector(1536))
     
-    # Relaciones
     documento = relationship("Documento", back_populates="chunks")

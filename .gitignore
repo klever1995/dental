@@ -1,1 +1,30 @@
+# Archivos de credenciales y tokens
+service-account-key.json
+credentials.json
+token.json
+*.key
+*.pem
+
+# Cache de Python
+__pycache__/
+*.pyc
+
+# Variables de entorno
 .env
+.env.local
+.env.*.local
+
+# Archivos temporales de prueba
+zarchivosprueba/
+agendar-calendar.py
+disponible-calendar.py
+eliminar-calendar.py
+obtener-calendar.py
+reagendar-calendar.py
+
+venv/
+__pycache__/
+*.pyc
+respaldo-calcom.txt
+
+zarchivosprueba/

@@ -9,6 +9,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from app.db.base import get_db
 from app.models.usuarios import Usuario
 from app.models.empresa import Empresa
+from app.models.especialidad import Especialidad 
 from app.schemas.usuarios import (
     UsuarioCreate, UsuarioResponse, UsuarioUpdate,
     UsuarioLogin, Token, TokenData
@@ -57,7 +58,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
             usuario_id=usuario_id,
             empresa_id=payload.get("empresa_id"),
             email=payload.get("email"),
-            rol=payload.get("rol")
+            rol=payload.get("rol"),
+            especialidad_id=payload.get("especialidad_id")  
         )
     except JWTError:
         raise credentials_exception
@@ -93,6 +95,18 @@ def registrar_usuario(
             detail="Email ya registrado"
         )
     
+    # Si se asignó una especialidad, verificar que existe y está activa
+    if usuario.especialidad_id:
+        especialidad = db.query(Especialidad).filter(
+            Especialidad.id == usuario.especialidad_id,
+            Especialidad.activa == True
+        ).first()
+        if not especialidad:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Especialidad no encontrada o inactiva"
+            )
+    
     # Crear nuevo usuario
     nuevo_usuario = Usuario(
         empresa_id=usuario.empresa_id,
@@ -100,6 +114,7 @@ def registrar_usuario(
         nombre=usuario.nombre,
         password_hash=get_password_hash(usuario.password),
         rol=usuario.rol,
+        especialidad_id=usuario.especialidad_id,  
         activo=True
     )
     
@@ -134,14 +149,15 @@ def login(
     usuario.ultimo_acceso = datetime.now()
     db.commit()
     
-    # Crear token
+    # Crear token incluyendo especialidad_id
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "sub": str(usuario.id),
             "empresa_id": usuario.empresa_id,
             "email": usuario.email,
-            "rol": usuario.rol
+            "rol": usuario.rol,
+            "especialidad_id": usuario.especialidad_id  
         },
         expires_delta=access_token_expires
     )
@@ -161,9 +177,13 @@ def listar_usuarios(
     current_user: Usuario = Depends(get_current_active_user)
 ):
     # Solo usuarios de la misma empresa
-    usuarios = db.query(Usuario).filter(
-        Usuario.empresa_id == current_user.empresa_id
-    ).offset(skip).limit(limit).all()
+    query = db.query(Usuario).filter(Usuario.empresa_id == current_user.empresa_id)
+    
+    # Si no es admin, solo puede ver usuarios de su misma especialidad (doctores)
+    if current_user.rol != "admin":
+        query = query.filter(Usuario.especialidad_id == current_user.especialidad_id)
+    
+    usuarios = query.offset(skip).limit(limit).all()
     return usuarios
 
 @router.get("/{usuario_id}", response_model=UsuarioResponse)
@@ -172,10 +192,16 @@ def obtener_usuario(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_active_user)
 ):
-    usuario = db.query(Usuario).filter(
+    query = db.query(Usuario).filter(
         Usuario.id == usuario_id,
         Usuario.empresa_id == current_user.empresa_id
-    ).first()
+    )
+    
+    # Si no es admin, solo puede ver usuarios de su misma especialidad
+    if current_user.rol != "admin":
+        query = query.filter(Usuario.especialidad_id == current_user.especialidad_id)
+    
+    usuario = query.first()
     
     if not usuario:
         raise HTTPException(
@@ -209,6 +235,18 @@ def actualizar_usuario(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Usuario no encontrado"
         )
+    
+    # Si se está cambiando la especialidad, verificar que existe
+    if usuario_update.especialidad_id is not None:
+        especialidad = db.query(Especialidad).filter(
+            Especialidad.id == usuario_update.especialidad_id,
+            Especialidad.activa == True
+        ).first()
+        if not especialidad:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Especialidad no encontrada o inactiva"
+            )
     
     # Actualizar campos
     update_data = usuario_update.dict(exclude_unset=True)

@@ -3,43 +3,44 @@ version: '3.8'
 services:
   postgres:
     image: ankane/pgvector:latest
-    container_name: dental_postgres  # 👈 CAMBIADO
+    container_name: dental_postgres
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin123
-      POSTGRES_DB: dental_db  # 👈 CAMBIADO
+      POSTGRES_DB: dental_db
     ports:
-      - "5433:5432"  # 👈 CAMBIADO (puerto externo 5433)
+      - "5433:5432"
     volumes:
-      - dental_postgres_data:/var/lib/postgresql/data  # 👈 CAMBIADO
+      - dental_postgres_data:/var/lib/postgresql/data
     restart: always
 
   redis:
     image: redis:7-alpine
-    container_name: dental_redis  # 👈 CAMBIADO
+    container_name: dental_redis
     ports:
-      - "6380:6379"  # 👈 CAMBIADO (puerto externo 6380)
+      - "6380:6379"
     volumes:
-      - dental_redis_data:/data  # 👈 CAMBIADO
+      - dental_redis_data:/data
     restart: always
 
   backend:
     build: ./backend
-    container_name: dental_backend  # 👈 CAMBIADO
+    container_name: dental_backend
     ports:
-      - "8001:8000"  # 👈 CAMBIADO (puerto externo 8001)
+      - "8001:8000"
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://admin:admin123@postgres:5432/dental_db  # 👈 CAMBIADO (nombre DB)
-      REDIS_URL: redis://redis:6379/0  # El interno no cambia
+      DATABASE_URL: postgresql://admin:admin123@postgres:5432/dental_db
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - ./backend:/app
+      - ./service-account-key.json:/app/service-account-key.json  # 🔥 NUEVA LÍNEA
     depends_on:
       - postgres
       - redis
     restart: always
 
 volumes:
-  dental_postgres_data:  # 👈 CAMBIADO
-  dental_redis_data:      # 👈 CAMBIADO
+  dental_postgres_data:
+  dental_redis_data:

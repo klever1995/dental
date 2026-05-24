@@ -3,6 +3,10 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 
+# ==============================
+# Modelo Usuario
+# Gestiona administradores y doctores con acceso al sistema
+# ==============================
 class Usuario(Base):
     __tablename__ = "usuarios"
 
@@ -12,13 +16,14 @@ class Usuario(Base):
     nombre = Column(String(100), nullable=False)
     password_hash = Column(String(255), nullable=False)
     rol = Column(String(50), nullable=False, default="admin")
+    especialidad_id = Column(Integer, ForeignKey("especialidades.id", ondelete="SET NULL"), nullable=True)  
     activo = Column(Boolean, default=True)
     ultimo_acceso = Column(DateTime(timezone=True), nullable=True)
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
     fecha_actualizacion = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Relación con empresa
     empresa = relationship("Empresa", backref="usuarios")
+    especialidad = relationship("Especialidad", backref="usuarios")  
 
     def __repr__(self):
-        return f"<Usuario {self.email} - Empresa {self.empresa_id}>"
+        return f"<Usuario {self.email} - Empresa {self.empresa_id} - Rol {self.rol} - Especialidad {self.especialidad_id}>"

@@ -11,7 +11,7 @@ from app.models.conversacion import Conversacion, TipoEmisor
 from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
 from app.services.whatsapp_sender import enviar_mensaje_whatsapp
-from app.services.calcom import obtener_slots_disponibles, agendar_cita, obtener_citas_cliente_por_cedula, eliminar_cita, reagendar_cita
+from app.services.google_calendar import obtener_slots_disponibles, agendar_cita, obtener_citas_cliente_por_cedula, eliminar_cita, reagendar_cita
 from app.handlers.horarios_handler import manejar_horarios
 from app.handlers.agendamiento_handler import manejar_agendamiento
 from app.handlers.cancelacion_handler import manejar_cancelacion
@@ -205,49 +205,64 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         hora = analisis.get("hora")
         nombre = analisis.get("nombre")
         booking_id = analisis.get("booking_id")
+        especialidad = analisis.get("especialidad")
+        
+        # Forzar AGENDAR si hay especialidad
+        if intencion == "OTRO" and especialidad:
+            intencion = "AGENDAR"
+            print(f"🔄 [FORZADO] Intención cambiada a AGENDAR porque se detectó especialidad: {especialidad}")
         
         respuesta_texto = ""
         
         if intencion == "HORARIOS" and fecha:
-            respuesta_texto = await manejar_horarios(fecha)
+            respuesta_texto = await manejar_horarios(fecha, especialidad=especialidad)
         
         # ==============================================
-        # CONSULTAR CITAS POR CÉDULA (migrado)
+        # CONSULTAR CITAS POR CÉDULA (SIEMPRE PREGUNTA LA CÉDULA)
         # ==============================================
         elif intencion == "CONSULTAR_CITAS":
             cedula_cliente = None
-            # Intentar extraer cédula del mensaje
+            # Solo extraer cédula del mensaje actual (NO usar datos guardados)
             cedula_match = re.search(r'\b(\d{6,10})\b', texto_mensaje)
             if cedula_match:
                 cedula_cliente = cedula_match.group(1)
-            elif cliente.datos_estructurados and cliente.datos_estructurados.get("cedula"):
-                cedula_cliente = cliente.datos_estructurados.get("cedula")
-            else:
-                if cliente.id not in agendamientos_temp:
-                    agendamientos_temp[cliente.id] = {"esperando_cedula_consulta": True}
-                respuesta_texto = "Para consultar tus citas, necesito tu número de cédula. ¿Cuál es tu cédula?"
             
-            if cedula_cliente:
-                if not cliente.datos_estructurados or not cliente.datos_estructurados.get("cedula"):
-                    if not cliente.datos_estructurados:
-                        cliente.datos_estructurados = {}
-                    cliente.datos_estructurados["cedula"] = cedula_cliente
-                    db.add(cliente)
-                    db.commit()
+            if not cedula_cliente:
+                agendamientos_temp[cliente.id] = {"esperando_cedula_consulta": True}
+                respuesta_texto = "Para consultar tus citas, necesito tu número de cédula. ¿Cuál es tu cédula?"
+            else:
+                # Guardar cédula (opcional, pero no se usa para omitir la pregunta)
+                if not cliente.datos_estructurados:
+                    cliente.datos_estructurados = {}
+                cliente.datos_estructurados["cedula"] = cedula_cliente
+                db.add(cliente)
+                db.commit()
                 
-                # Usar la nueva función por cédula
-                citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente)
+                # Consultar citas
+                citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente, calendar_id=None)
                 if citas_resultado.get("exito"):
                     citas = citas_resultado.get("citas", [])
                     if citas:
-                        agendamientos_temp[cliente.id] = {"citas": citas, "cedula": cedula_cliente}
+                        from app.models.especialidad import Especialidad
                         lista_citas = []
                         for i, cita in enumerate(citas, 1):
                             fecha_iso = cita["fecha"]
                             fecha_obj = datetime.datetime.fromisoformat(fecha_iso)
                             fecha_legible = fecha_obj.strftime("%d/%m/%Y")
                             hora_legible = fecha_obj.strftime("%H:%M")
-                            lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible}")
+                            
+                            # Obtener nombre de especialidad
+                            calendar_id = cita.get("calendar_id")
+                            especialidad_nombre = "Desconocida"
+                            if calendar_id:
+                                esp = db.query(Especialidad).filter(
+                                    Especialidad.calendar_id == calendar_id,
+                                    Especialidad.activa == True
+                                ).first()
+                                if esp:
+                                    especialidad_nombre = esp.nombre
+                            
+                            lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible} - 🩺 {especialidad_nombre}")
                         respuesta_texto = "📋 *Tus citas agendadas:*\n\n" + "\n".join(lista_citas)
                         respuesta_texto += "\n\n¿Qué deseas hacer? Responde 'cancelar 1' o 'reagendar 1' (ej: 'cancelar 1' o 'reagendar 1')."
                     else:
@@ -265,7 +280,8 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                 texto_mensaje=texto_mensaje,
                 rag=rag,
                 historial=historial,
-                agendamientos_temp=agendamientos_temp
+                agendamientos_temp=agendamientos_temp,
+                especialidad=especialidad
             )
         
         elif intencion == "CANCELAR":

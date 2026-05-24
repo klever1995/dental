@@ -23,6 +23,7 @@ class RAGService:
         self.db = db
         self.empresa_id = empresa_id
         self.cliente_id = cliente_id
+        self.DOCUMENTO_ESPECIALIDADES_ID = 9999  # ID fijo para el documento de especialidades
     
     def obtener_historial_reciente(self, limite: int = 20) -> str:
         """Obtiene los últimos mensajes de la conversación actual"""
@@ -46,13 +47,13 @@ class RAGService:
     
     def extraer_intencion_y_fecha(self, mensaje: str, historial: str = "") -> dict:
         """
-        Extrae la intención del mensaje, fecha, hora, nombre y booking_id si corresponde.
+        Extrae la intención del mensaje, fecha, hora, nombre, especialidad y booking_id si corresponde.
         NO ejecuta funciones, solo devuelve JSON.
         """
         ecuador = pytz.timezone("America/Guayaquil")
         hoy = datetime.now(ecuador).strftime("%Y-%m-%d")
         
-        prompt = f"""Eres un asistente que analiza mensajes de clientes de una clínica dental.
+        prompt = f"""Eres un asistente que analiza mensajes de clientes de una clínica médica con múltiples especialidades.
 
 Hoy es {hoy}.
 
@@ -63,24 +64,42 @@ Analiza el siguiente mensaje y devuelve SOLO un JSON con estos campos:
     "fecha": "YYYY-MM-DD" o null,
     "hora": "HH:MM" o null,
     "nombre": "nombre extraído" o null,
-    "booking_id": null o número entero (si el usuario menciona un ID de cita)
+    "especialidad": "nombre de la especialidad médica" o null,
+    "booking_id": null o número entero
 }}
 
-REGLAS IMPORTANTES PARA EXTRACCIÓN DE NOMBRE:
-- SOLO extrae un nombre si es claramente un nombre propio de persona (ej: "Klever Robalino", "Ana", "Juan Pérez").
-- NO extraigas como nombre palabras como: "abuela", "mamá", "papá", "tío", "mi hermano", "esposa", "hijo", "yo", "para mí", "mi", "ella", "él".
-- Si el usuario dice "para mi abuela", "para mi mamá", "quiero agendar para mi hijo", el campo "nombre" DEBE ser null.
-- Si el usuario dice "soy Klever" o "me llamo Ana", ahí SÍ extrae el nombre.
-- Si el usuario da un nombre y una relación familiar (ej: "mi abuela se llama Rosa"), extrae "Rosa" como nombre.
+REGLAS IMPORTANTES:
 
-Para fechas, entiende expresiones como:
-- "martes de la próxima semana" → calcula la fecha exacta
-- "mañana" → fecha de mañana
-- "31 de marzo" → 2026-03-31
-- "el lunes" → próximo lunes
+1. EXTRACCIÓN DE NOMBRE:
+- SOLO extrae un nombre si es claramente un nombre propio de persona.
+- NO extraigas como nombre palabras como: "abuela", "mamá", "papá", "tío", "mi hermano", etc.
+- Si el usuario dice "para mi abuela", el campo "nombre" DEBE ser null.
+- Si el usuario dice "soy Klever" o "me llamo Ana", SÍ extrae el nombre.
 
-Para cancelación o reagendamiento, si el usuario menciona un número de ID de cita (ej: "cancelar la cita 17825362", "reagendar la cita 17906494"), extrae ese número en el campo booking_id.
-Si menciona una fecha (ej: "cancelar la cita del 2 de abril", "reagendar la cita del 6 de abril"), extrae esa fecha en el campo fecha.
+2. EXTRACCIÓN DE ESPECIALIDAD (NUEVO - INFERENCIA SEMÁNTICA):
+- Extrae la especialidad médica que el usuario menciona o SUGIERE por síntomas.
+- Ejemplos de palabras clave y su especialidad asociada:
+  * "muela", "diente", "dentista", "limpieza dental", "caries" → "odontologia"
+  * "niño", "pediatra", "vacunas infantiles" → "pediatria"
+  * "estómago", "digestión", "gastro", "acidez" → "gastroenterologia"
+  * "corazón", "pecho", "presión arterial", "cardiólogo" → "cardiologia"
+  * "piel", "alergia", "sarpullido", "dermatólogo" → "dermatologia"
+  * "hueso", "fractura", "esguince", "traumatólogo" → "traumatologia"
+- Si el usuario dice explícitamente "para cardiología" → "cardiologia"
+- Si el usuario dice "me duele el pecho" → infiere "cardiologia"
+- Si el usuario dice "me duele la muela" → infiere "odontologia"
+- Si no hay indicios, devuelve null.
+
+3. INTENCIÓN:
+- "AGENDAR": si el usuario quiere agendar una cita (explícita o implícitamente).
+- "HORARIOS": si pregunta por disponibilidad de horarios.
+- "CANCELAR": si quiere cancelar una cita.
+- "REAGENDAR": si quiere reagendar/cambiar una cita.
+- "CONSULTAR_CITAS": si pregunta por sus citas agendadas.
+- "INFO": si pregunta por información general (precios, ubicación).
+- "OTRO": cualquier otra cosa.
+
+4. FECHAS: entiende expresiones como "martes de la próxima semana", "mañana", "31 de marzo".
 
 Historial reciente:
 {historial}
@@ -98,9 +117,12 @@ RESPONDE SOLO EL JSON, sin texto adicional."""
         
         try:
             resultado = json.loads(response.choices[0].message.content)
+            # Asegurar que el campo especialidad exista
+            if "especialidad" not in resultado:
+                resultado["especialidad"] = None
             return resultado
         except:
-            return {"intencion": "OTRO", "fecha": None, "hora": None, "nombre": None, "booking_id": None}
+            return {"intencion": "OTRO", "fecha": None, "hora": None, "nombre": None, "especialidad": None, "booking_id": None}
     
     def clasificar_respuesta_flujo(self, mensaje: str, paso_actual: str, historial: str = "") -> dict:
         """
@@ -199,6 +221,68 @@ Instrucciones:
         
         return response.choices[0].message.content
     
+    # ============================================
+    # NUEVO: Sincronización de especialidades como chunks
+    # ============================================
+    
+    def sincronizar_especialidades(self):
+        """
+        Sincroniza todas las especialidades activas como chunks en la tabla chunks_documento.
+        Asocia los chunks a un documento especial con id = DOCUMENTO_ESPECIALIDADES_ID.
+        """
+        from app.models.especialidad import Especialidad
+        from app.models.documento import ChunkDocumento
+        
+        # Verificar que el documento especial existe; si no, crearlo
+        from app.models.documento import Documento
+        doc_especial = self.db.query(Documento).filter(Documento.id == self.DOCUMENTO_ESPECIALIDADES_ID).first()
+        if not doc_especial:
+            doc_especial = Documento(
+                id=self.DOCUMENTO_ESPECIALIDADES_ID,
+                empresa_id=self.empresa_id,
+                nombre="especialidades",
+                hash_contenido="especialidades_static"
+            )
+            self.db.add(doc_especial)
+            self.db.commit()
+        
+        # Eliminar chunks antiguos de especialidades
+        self.db.query(ChunkDocumento).filter(
+            ChunkDocumento.documento_id == self.DOCUMENTO_ESPECIALIDADES_ID
+        ).delete()
+        
+        # Obtener todas las especialidades activas de esta empresa
+        especialidades = self.db.query(Especialidad).filter(
+            Especialidad.empresa_id == self.empresa_id,
+            Especialidad.activa == True
+        ).all()
+        
+        # Crear nuevos chunks por cada especialidad
+        for idx, esp in enumerate(especialidades):
+            # Construir texto del chunk
+            texto_chunk = f"""Especialidad: {esp.nombre}
+Descripción: {esp.descripcion or f'{esp.nombre.capitalize()} es una especialidad médica disponible en la clínica.'}
+Esta especialidad está activa y se pueden agendar citas consultando los horarios disponibles."""
+            
+            # Generar embedding
+            embedding = self.generar_embedding(texto_chunk)
+            
+            # Guardar chunk
+            chunk = ChunkDocumento(
+                documento_id=self.DOCUMENTO_ESPECIALIDADES_ID,
+                indice=idx,
+                texto=texto_chunk,
+                embedding=embedding
+            )
+            self.db.add(chunk)
+        
+        self.db.commit()
+        print(f"✅ Sincronizadas {len(especialidades)} especialidades como chunks RAG")
+    
+    # ============================================
+    # MÉTODOS EXISTENTES (sin cambios)
+    # ============================================
+    
     def extraer_texto_pdf(self, archivo_bytes: bytes) -> str:
         """Extrae texto de un archivo PDF"""
         texto = ""
@@ -256,11 +340,13 @@ Instrucciones:
         return doc
     
     def buscar_similares(self, consulta: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Busca chunks similares a la consulta usando similitud de coseno"""
+        """Busca chunks similares a la consulta usando similitud de coseno.
+        Busca tanto en los chunks de documentos PDF como en los de especialidades."""
         from app.models.documento import ChunkDocumento
         
         embedding_consulta = self.generar_embedding(consulta)
         
+        # Obtener todos los chunks de la empresa (incluye documentos y especialidades)
         chunks = self.db.query(ChunkDocumento).filter(
             ChunkDocumento.documento.has(empresa_id=self.empresa_id)
         ).all()
@@ -273,7 +359,8 @@ Instrucciones:
             resultados.append({
                 "texto": chunk.texto,
                 "similitud": similitud,
-                "documento": chunk.documento.nombre
+                "documento_id": chunk.documento_id,
+                "documento_nombre": chunk.documento.nombre if chunk.documento else "desconocido"
             })
         
         resultados.sort(key=lambda x: x["similitud"], reverse=True)

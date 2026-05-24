@@ -1,5 +1,5 @@
 import socketio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Crear el servidor Socket.IO con CORS permitido para el frontend
 sio = socketio.AsyncServer(
@@ -61,19 +61,18 @@ async def emitir_nueva_venta(venta_dict: Dict[str, Any], empresa_id: int):
     await sio.emit("nueva_venta", venta_dict, room=room_name)
 
 
-# Función auxiliar para emitir evento de cita actualizada
-async def emitir_cita_actualizada(cita_dict: Dict[str, Any], empresa_id: int):
+# Función auxiliar para emitir evento de cita actualizada (CORREGIDA con argumentos opcionales)
+async def emitir_cita_actualizada(cita_dict: Optional[Dict[str, Any]] = None, empresa_id: Optional[int] = None):
     """
-    Emite un evento 'cita_actualizada' a todos los clientes conectados
-    que estén en la sala de la empresa correspondiente
+    Emite un evento 'citas_actualizadas' a todos los clientes conectados
+    que estén en la sala de la empresa correspondiente.
+    Si no se especifica empresa_id, se emite a todas las salas.
     """
-    room_name = f"empresa_{empresa_id}"
-    print(f"📢 [LOG 1] Emitiendo cita actualizada a sala: {room_name}")
-    print(f"📢 [LOG 2] Datos a emitir: {cita_dict}")
-    try:
-        await sio.emit("cita_actualizada", cita_dict, room=room_name)
-        print(f"✅ [LOG 3] Evento emitido exitosamente a sala {room_name}")
-    except Exception as e:
-        print(f"❌ [LOG ERROR] Falló la emisión: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    # Si no viene empresa_id, emitimos a todas las salas de empresas (1,2,3...)
+    if empresa_id is None:
+        print(f"📢 Emitiendo cita actualizada a TODAS las salas (evento genérico)")
+        await sio.emit("citas_actualizadas", {"message": "actualizar"})
+    else:
+        room_name = f"empresa_{empresa_id}"
+        print(f"📢 Emitiendo cita actualizada a sala: {room_name}")
+        await sio.emit("citas_actualizadas", cita_dict or {}, room=room_name)

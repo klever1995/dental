@@ -4,11 +4,19 @@ from sqlalchemy.orm import relationship
 from app.db.base import Base
 import enum
 
+# ==============================
+# Enumerador de emisores
+# Define quién envía el mensaje en la conversación
+# ==============================
 class TipoEmisor(str, enum.Enum):
     CLIENTE = "cliente"
     BOT = "bot"
     ASESOR = "asesor"
 
+# ==============================
+# Modelo Conversacion
+# Registro individual de cada mensaje intercambiado
+# ==============================
 class Conversacion(Base):
     __tablename__ = "conversaciones"
 
@@ -18,7 +26,6 @@ class Conversacion(Base):
     emisor = Column(Enum(TipoEmisor), nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     
-    # Relación con cliente
     cliente = relationship("Cliente", backref="mensajes")
 
     def __repr__(self):

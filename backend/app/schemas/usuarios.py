@@ -13,6 +13,7 @@ class UsuarioBase(BaseModel):
 class UsuarioCreate(UsuarioBase):
     password: str = Field(..., min_length=6, description="Contraseña mínima 6 caracteres")
     empresa_id: int
+    especialidad_id: Optional[int] = None  # 
 
 # Schema para login
 class UsuarioLogin(BaseModel):
@@ -23,6 +24,7 @@ class UsuarioLogin(BaseModel):
 class UsuarioResponse(UsuarioBase):
     id: int
     empresa_id: int
+    especialidad_id: Optional[int] = None  
     ultimo_acceso: Optional[datetime] = None
     fecha_registro: datetime
     fecha_actualizacion: Optional[datetime] = None
@@ -41,6 +43,7 @@ class TokenData(BaseModel):
     empresa_id: Optional[int] = None
     email: Optional[str] = None
     rol: Optional[str] = None
+    especialidad_id: Optional[int] = None  
 
 # Schema para actualizar usuario
 class UsuarioUpdate(BaseModel):
@@ -49,3 +52,4 @@ class UsuarioUpdate(BaseModel):
     password: Optional[str] = Field(None, min_length=6)
     rol: Optional[str] = None
     activo: Optional[bool] = None
+    especialidad_id: Optional[int] = None  

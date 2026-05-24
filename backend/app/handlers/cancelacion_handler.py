@@ -1,6 +1,8 @@
 import re
 import datetime
-from app.services.calcom import obtener_citas_cliente_por_cedula, eliminar_cita
+from app.services.google_calendar import obtener_citas_cliente_por_cedula, eliminar_cita
+from app.db.base import SessionLocal
+from app.models.especialidad import Especialidad
 
 async def manejar_cancelacion(
     cliente_id: int,
@@ -33,48 +35,65 @@ async def manejar_cancelacion(
     step = estado.get("step")
     
     # ==============================================
-    # PASO 1: ESPERANDO CÉDULA
+    # PASO 1: ESPERANDO CÉDULA (siempre preguntar)
     # ==============================================
     if step == "esperando_cedula":
         cedula_cliente = None
         
+        # Extraer cédula del mensaje (si la escribió)
         cedula_match = re.search(r'\b(\d{6,10})\b', texto_mensaje)
         if cedula_match:
             cedula_cliente = cedula_match.group(1)
-        elif cliente.datos_estructurados and cliente.datos_estructurados.get("cedula"):
-            cedula_cliente = cliente.datos_estructurados.get("cedula")
         
         if not cedula_cliente:
+            # Si no, usar clasificación del RAG
             clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "cedula", historial)
-            if not clasificacion.get("es_valido"):
-                respuesta_texto = clasificacion.get("respuesta_rag", "No entendí tu cédula.")
-                respuesta_texto += "\n\nPara cancelar una cita, necesito tu número de cédula. ¿Cuál es tu cédula?"
-                return respuesta_texto, agendamientos_temp
-            else:
+            if clasificacion.get("es_valido"):
                 cedula_cliente = clasificacion.get("dato_extraido")
+            else:
+                respuesta_texto = "Para cancelar una cita, necesito tu número de cédula. ¿Cuál es tu cédula?"
+                return respuesta_texto, agendamientos_temp
         
         if cedula_cliente:
+            # Guardar cédula en datos estructurados del cliente
             if not cliente.datos_estructurados:
                 cliente.datos_estructurados = {}
             cliente.datos_estructurados["cedula"] = cedula_cliente
             db.add(cliente)
             db.commit()
             
-            citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente)
+            # Obtener todas las citas futuras del cliente (sin filtrar por calendario)
+            citas_resultado = obtener_citas_cliente_por_cedula(cedula_cliente, calendar_id=None)
             if citas_resultado.get("exito"):
                 citas = citas_resultado.get("citas", [])
                 if citas:
                     estado["step"] = "mostrando_citas"
                     estado["data"]["citas"] = citas
                     estado["data"]["cedula"] = cedula_cliente
-                    # Mostrar lista de citas
+                    
+                    # Mostrar lista de citas con especialidad (obtener nombre desde calendar_id)
                     lista_citas = []
                     for i, cita in enumerate(citas, 1):
                         fecha_iso = cita["fecha"]
                         fecha_obj = datetime.datetime.fromisoformat(fecha_iso)
                         fecha_legible = fecha_obj.strftime("%d/%m/%Y")
                         hora_legible = fecha_obj.strftime("%H:%M")
-                        lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible}")
+                        
+                        # Obtener nombre de la especialidad desde calendar_id
+                        calendar_id = cita.get("calendar_id")
+                        especialidad_nombre = "Desconocida"
+                        if calendar_id:
+                            db_temp = SessionLocal()
+                            esp = db_temp.query(Especialidad).filter(
+                                Especialidad.calendar_id == calendar_id,
+                                Especialidad.activa == True
+                            ).first()
+                            if esp:
+                                especialidad_nombre = esp.nombre
+                            db_temp.close()
+                        
+                        lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible} - 🩺 {especialidad_nombre}")
+                    
                     respuesta_texto = "📋 *Tus citas agendadas:*\n\n" + "\n".join(lista_citas)
                     respuesta_texto += "\n\n¿Cuál deseas cancelar? Puedes decirme el número, la fecha o la hora."
                 else:
@@ -104,7 +123,6 @@ async def manejar_cancelacion(
         
         # 🔥 2. SI NO, INTENTAR POR FECHA
         if not cita_seleccionada:
-            # Extraer fecha del mensaje
             analisis = rag.extraer_intencion_y_fecha(texto_mensaje, historial)
             fecha_extraida = analisis.get("fecha")
             if fecha_extraida:
@@ -115,19 +133,16 @@ async def manejar_cancelacion(
                         cita_seleccionada = cita
                         break
         
-        # 🔥 3. SI NO, INTENTAR POR HORA (ej. "la de las 10", "cancelar la de las 10")
+        # 🔥 3. SI NO, INTENTAR POR HORA
         if not cita_seleccionada:
-            # Buscar hora en el mensaje (ej. "10", "las 10", "10:00", "10am")
             hora_match = re.search(r'(\d{1,2})\s*(?::\s*00)?\s*(?:am|pm|horas|hrs)?', texto_mensaje.lower())
             if hora_match:
                 hora_buscada = int(hora_match.group(1))
-                # Normalizar hora (si es 10pm -> 22, etc.)
                 if 'pm' in texto_mensaje.lower() and hora_buscada < 12:
                     hora_buscada += 12
                 elif 'am' in texto_mensaje.lower() and hora_buscada == 12:
                     hora_buscada = 0
                 
-                # Buscar cita que tenga esa hora
                 for cita in citas:
                     fecha_cita_obj = datetime.datetime.fromisoformat(cita["fecha"])
                     if fecha_cita_obj.hour == hora_buscada:
@@ -136,7 +151,15 @@ async def manejar_cancelacion(
         
         # 🔥 SI SE ENCONTRÓ UNA CITA, CANCELAR
         if cita_seleccionada:
-            resultado = eliminar_cita(cita_seleccionada["booking_id"])
+            event_id = cita_seleccionada.get("booking_id")
+            calendar_id = cita_seleccionada.get("calendar_id")
+            
+            if not calendar_id:
+                respuesta_texto = "❌ No se pudo identificar el calendario de la cita. Por favor, intenta de nuevo."
+                del agendamientos_temp[cliente_id]
+                return respuesta_texto, agendamientos_temp
+            
+            resultado = eliminar_cita(event_id=event_id, calendar_id=calendar_id)
             if resultado.get("exito"):
                 fecha_legible = datetime.datetime.fromisoformat(cita_seleccionada["fecha"]).strftime("%d/%m/%Y a las %H:%M")
                 respuesta_texto = f"✅ Cita del {fecha_legible} ha sido cancelada exitosamente."
@@ -149,13 +172,28 @@ async def manejar_cancelacion(
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "numero_cita", historial)
         if not clasificacion.get("es_valido"):
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu consulta.")
+            # Regenerar lista de citas con especialidad (igual que arriba)
             lista_citas = []
             for i, cita in enumerate(citas, 1):
                 fecha_iso = cita["fecha"]
                 fecha_obj = datetime.datetime.fromisoformat(fecha_iso)
                 fecha_legible = fecha_obj.strftime("%d/%m/%Y")
                 hora_legible = fecha_obj.strftime("%H:%M")
-                lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible}")
+                
+                calendar_id = cita.get("calendar_id")
+                especialidad_nombre = "Desconocida"
+                if calendar_id:
+                    db_temp = SessionLocal()
+                    esp = db_temp.query(Especialidad).filter(
+                        Especialidad.calendar_id == calendar_id,
+                        Especialidad.activa == True
+                    ).first()
+                    if esp:
+                        especialidad_nombre = esp.nombre
+                    db_temp.close()
+                
+                lista_citas.append(f"{i}. 📅 {fecha_legible} a las {hora_legible} - 🩺 {especialidad_nombre}")
+            
             respuesta_texto = f"{respuesta_rag}\n\n📋 *Tus citas agendadas:*\n\n" + "\n".join(lista_citas)
             respuesta_texto += "\n\n¿Cuál deseas cancelar? Puedes decirme el número, la fecha o la hora."
         else:
@@ -169,6 +207,3 @@ async def manejar_cancelacion(
     respuesta_texto = "Ocurrió un error. Por favor, inicia de nuevo."
     del agendamientos_temp[cliente_id]
     return respuesta_texto, agendamientos_temp
-
-
-
