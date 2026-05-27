@@ -1,3 +1,7 @@
+# ==============================
+# Handler de consulta de horarios disponibles
+# Recibe especialidad y fecha, obtiene calendar_id de BD y consulta slots en Google Calendar
+# ==============================
 import datetime
 from app.services.google_calendar import obtener_slots_disponibles
 from app.db.base import SessionLocal
@@ -20,11 +24,11 @@ async def manejar_horarios(fecha: str, especialidad: str = None, empresa_id: int
     if not esp:
         return f"Lo siento, no tengo registrada la especialidad '{especialidad}'. Las especialidades disponibles son las que ves en el sistema."
     
-    calendar_id = esp.calendar_id  # 🔥 AHORA USA calendar_id
+    calendar_id = esp.calendar_id 
     
     # Consultar slots disponibles en Google Calendar
     slots_resultado = obtener_slots_disponibles(
-        calendar_id=calendar_id,  # 🔥 AHORA calendar_id
+        calendar_id=calendar_id,
         fecha_inicio=fecha, 
         dias_a_mostrar=1
     )
@@ -32,8 +36,7 @@ async def manejar_horarios(fecha: str, especialidad: str = None, empresa_id: int
     if slots_resultado.get("exito") and slots_resultado.get("slots_por_fecha"):
         slots_dia = slots_resultado["slots_por_fecha"].get(fecha, [])
         if slots_dia:
-            # Google Calendar ya devuelve strings directamente, no diccionarios
-            horas = slots_dia  # En la nueva versión, slots_dia es una lista de strings
+            horas = slots_dia 
             
             fecha_obj = datetime.datetime.strptime(fecha, "%Y-%m-%d")
             fecha_legible = fecha_obj.strftime("%d/%m/%Y")

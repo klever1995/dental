@@ -1,3 +1,7 @@
+# ==============================
+# Endpoint webhook de WhatsApp
+# Recepción de mensajes, análisis con RAG, manejo de flujos (agendar/cancelar/reagendar) y envío de respuestas
+# ==============================
 from fastapi import APIRouter, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 import os
@@ -21,9 +25,11 @@ import re
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
-# Diccionario temporal para guardar datos de agendamiento y cancelación por cliente
 agendamientos_temp = {}
 
+# ==============================
+# Transcripción de audios con Groq/Whisper
+# ==============================
 def transcribir_audio(url_audio: str) -> str:
     try:
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -42,11 +48,17 @@ def transcribir_audio(url_audio: str) -> str:
         print(f"❌ Error en transcripción: {e}")
         return "[Error al transcribir el audio]"
 
+# ==============================
+# Extraer cédula del texto
+# ==============================
 def extraer_cedula(mensaje: str) -> str:
     """Extrae un número de cédula de 6 a 10 dígitos del mensaje"""
     match = re.search(r'\b(\d{6,10})\b', mensaje)
     return match.group(1) if match else None
 
+# ==============================
+# Webhook principal de WhatsApp
+# ==============================
 @router.post("/webhook")
 async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
     global agendamientos_temp
@@ -217,9 +229,7 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         if intencion == "HORARIOS" and fecha:
             respuesta_texto = await manejar_horarios(fecha, especialidad=especialidad)
         
-        # ==============================================
         # CONSULTAR CITAS POR CÉDULA (SIEMPRE PREGUNTA LA CÉDULA)
-        # ==============================================
         elif intencion == "CONSULTAR_CITAS":
             cedula_cliente = None
             # Solo extraer cédula del mensaje actual (NO usar datos guardados)
@@ -352,6 +362,9 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+# ==============================
+# Verificación del webhook (Meta/Facebook)
+# ==============================
 @router.get("/webhook")
 async def verificar_webhook(request: Request):
     params = request.query_params

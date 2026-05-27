@@ -1,3 +1,8 @@
+# ==============================
+# Servicio de Google Calendar
+# Autenticación y operaciones CRUD sobre calendarios y eventos
+# ==============================
+
 import os
 from datetime import datetime, timedelta
 import pytz
@@ -12,6 +17,9 @@ SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 TIMEZONE = "America/Guayaquil"
 
+# ==============================
+# Obtener servicio autenticado de Google Calendar
+# ==============================
 def get_google_calendar_service():
     """Obtiene el servicio de Google Calendar autenticado con cuenta de servicio"""
     creds = service_account.Credentials.from_service_account_file(
@@ -25,22 +33,7 @@ def obtener_slots_disponibles(
     dias_a_mostrar: int = 5,
     duracion_minutos: int = 60
 ) -> dict:
-    """
-    Consulta slots disponibles usando Google Calendar API
-    
-    Args:
-        calendar_id: ID del calendario de Google (ej: "ecfdc7b...@group.calendar.google.com")
-        fecha_inicio: Fecha específica en formato 'YYYY-MM-DD' (opcional)
-        dias_a_mostrar: Si no hay fecha_inicio, muestra esta cantidad de días
-        duracion_minutos: Duración de la cita en minutos (por defecto 60)
-    
-    Returns:
-        dict: {
-            "exito": bool,
-            "slots_por_fecha": {"YYYY-MM-DD": ["09:00", "10:00", ...]},
-            "mensaje": str
-        }
-    """
+
     ecuador = pytz.timezone(TIMEZONE)
     ahora = datetime.now(ecuador)
     
@@ -55,7 +48,7 @@ def obtener_slots_disponibles(
                 print(f"⚠️ Fecha pasada, mostrando desde {inicio.strftime('%Y-%m-%d')}")
             else:
                 inicio = inicio.replace(hour=0, minute=0, second=0, microsecond=0)
-            fin = inicio + timedelta(days=1)  # Solo ese día
+            fin = inicio + timedelta(days=1)  
         except ValueError:
             return {
                 "exito": False,
@@ -63,7 +56,7 @@ def obtener_slots_disponibles(
                 "mensaje": f"Formato de fecha inválido. Usa YYYY-MM-DD"
             }
     else:
-        # Desde mañana
+
         inicio = (ahora + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         fin = inicio + timedelta(days=dias_a_mostrar)
     
@@ -101,8 +94,8 @@ def obtener_slots_disponibles(
         # Generar todos los slots posibles en el rango de fechas
         slots_por_fecha = {}
         dia_actual = inicio
-        hora_inicio_laboral = 9  # 9:00 AM
-        hora_fin_laboral = 17   # 5:00 PM
+        hora_inicio_laboral = 9  
+        hora_fin_laboral = 17   
         
         while dia_actual < fin:
             fecha_str = dia_actual.strftime("%Y-%m-%d")
@@ -119,7 +112,7 @@ def obtener_slots_disponibles(
                 if slot_key not in ocupados:
                     slots_por_fecha[fecha_str].append(hora_str)
                 
-                hora += 1  # Próxima hora (puedes ajustar según la duración)
+                hora += 1  
             
             dia_actual += timedelta(days=1)
         
@@ -151,7 +144,10 @@ def obtener_slots_disponibles(
             "slots_por_fecha": {},
             "mensaje": f"Error en la consulta: {str(e)}"
         }
-    
+
+# ==============================
+# Crear una nueva cita en Google Calendar
+# ==============================    
 def agendar_cita(calendar_id: str, cliente_nombre: str, cliente_email: str, cliente_cedula: str, cliente_telefono: str, hora: datetime, notas_adicionales: str = None) -> dict:
     if not hora:
         return {
@@ -204,8 +200,6 @@ def agendar_cita(calendar_id: str, cliente_nombre: str, cliente_email: str, clie
         },
     }
 
-    # 🔥 NO SE AGREGA LA CLAVE 'attendees' AL EVENTO
-
     try:
         evento_creado = service.events().insert(calendarId=calendar_id, body=event).execute()
         
@@ -235,12 +229,11 @@ def agendar_cita(calendar_id: str, cliente_nombre: str, cliente_email: str, clie
             "exito": False,
             "error": f"Error inesperado: {str(e)}"
         }
-    
+
+# ==============================
+# Buscar citas de un paciente por número de cédula
+# ==============================    
 def obtener_citas_cliente_por_cedula(cedula: str, calendar_id: str = None) -> dict:
-    """
-    Obtiene las citas futuras de un paciente por su cédula.
-    Busca en el calendario específico (si se pasa calendar_id) o en todos los calendarios de especialidades.
-    """
 
     # Configuración de Google Calendar
     SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account-key.json")
@@ -337,7 +330,7 @@ def obtener_citas_cliente_por_cedula(cedula: str, calendar_id: str = None) -> di
                 
                 citas.append({
                     "booking_id": event.get('id'),
-                    "uid": event.get('id'),  # En Google Calendar, el id es el identificador único
+                    "uid": event.get('id'),  
                     "fecha": start_local.isoformat(),
                     "estado": event.get('status', 'confirmed'),
                     "calendar_id": cal_id,
@@ -354,6 +347,9 @@ def obtener_citas_cliente_por_cedula(cedula: str, calendar_id: str = None) -> di
 
     return {"exito": True, "citas": citas}    
 
+# ==============================
+# Eliminar una cita de Google Calendar
+# ==============================
 def eliminar_cita(event_id: str, calendar_id: str) -> dict:
 
     SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account-key.json")

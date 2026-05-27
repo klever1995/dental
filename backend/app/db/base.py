@@ -1,27 +1,29 @@
+# ==============================
+# Configuración de base de datos PostgreSQL
+# ==============================
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-# Obtener la URL de la base de datos desde variables de entorno
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:admin123@localhost:5432/sublimados_db")
 
-# Crear el motor de SQLAlchemy
 engine = create_engine(DATABASE_URL)
 
-# --- NUEVO: Habilitar la extensión vector en PostgreSQL ---
+# ==============================
+# Habilitar extensión vector en PostgreSQL
+# ==============================
 with engine.connect() as conn:
     conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     conn.commit()
-# ---------------------------------------------------------
 
-# Crear una fábrica de sesiones
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base para modelos declarativos
 Base = declarative_base()
 
-# Función para obtener una sesión de base de datos (dependencia para FastAPI)
+# ==============================
+# Dependencia para obtener sesión de BD en FastAPI
+# ==============================
 def get_db():
     db = SessionLocal()
     try:

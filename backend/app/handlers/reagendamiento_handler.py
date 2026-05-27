@@ -1,3 +1,7 @@
+# ==============================
+# Handler de reagendamiento de citas
+# Flujo: pedir cédula → mostrar citas → seleccionar por número/fecha/hora → pedir nueva fecha/hora → reagendar
+# ==============================
 import re
 import datetime
 from app.services.google_calendar import obtener_citas_cliente_por_cedula, obtener_slots_disponibles, reagendar_cita
@@ -112,14 +116,14 @@ async def manejar_reagendamiento(
         citas = estado["data"].get("citas", [])
         cita_seleccionada = None
         
-        # 🔥 1. INTENTAR POR NÚMERO DE LISTA
+        #1. INTENTAR POR NÚMERO DE LISTA
         match_num = re.search(r'(\d+)', texto_mensaje)
         if match_num:
             idx = int(match_num.group(1)) - 1
             if 0 <= idx < len(citas):
                 cita_seleccionada = citas[idx]
         
-        # 🔥 2. SI NO, INTENTAR POR FECHA
+        #2. SI NO, INTENTAR POR FECHA
         if not cita_seleccionada:
             analisis = rag.extraer_intencion_y_fecha(texto_mensaje, historial)
             fecha_extraida = analisis.get("fecha")
@@ -131,7 +135,7 @@ async def manejar_reagendamiento(
                         cita_seleccionada = cita
                         break
         
-        # 🔥 3. SI NO, INTENTAR POR HORA
+        #3. SI NO, INTENTAR POR HORA
         if not cita_seleccionada:
             hora_match = re.search(r'(\d{1,2})\s*(?::\s*00)?\s*(?:am|pm|horas|hrs)?', texto_mensaje.lower())
             if hora_match:
@@ -147,9 +151,9 @@ async def manejar_reagendamiento(
                         cita_seleccionada = cita
                         break
         
-        # 🔥 SI SE ENCONTRÓ UNA CITA, PASAR A SELECCIONAR NUEVA FECHA
+        #SI SE ENCONTRÓ UNA CITA, PASAR A SELECCIONAR NUEVA FECHA
         if cita_seleccionada:
-            event_id = cita_seleccionada.get("booking_id")  # En Google Calendar, booking_id es el event_id
+            event_id = cita_seleccionada.get("booking_id")  
             calendar_id = cita_seleccionada.get("calendar_id")
             cliente_nombre = cita_seleccionada.get("summary", "").split(" - ")[0] if cita_seleccionada.get("summary") else "Cliente"
             cliente_email = cita_seleccionada.get("notas", "").split("Correo: ")[1].split("\n")[0] if "Correo: " in cita_seleccionada.get("notas", "") else ""
@@ -168,7 +172,7 @@ async def manejar_reagendamiento(
             respuesta_texto = "Perfecto. ¿Para qué nueva fecha y hora deseas reagendar la cita? (ej: 'mañana a las 11:00' o '7 de abril a las 12:00')"
             return respuesta_texto, agendamientos_temp
         
-        # 🔥 SI NO SE ENCONTRÓ, MANEJAR INTERRUPCIÓN O REPETIR LISTA
+        #SI NO SE ENCONTRÓ, MANEJAR INTERRUPCIÓN O REPETIR LISTA
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "numero_cita", historial)
         if not clasificacion.get("es_valido"):
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu consulta.")
@@ -213,14 +217,14 @@ async def manejar_reagendamiento(
         cliente_telefono = estado["data"].get("reagendar_telefono")
         notas_originales = estado["data"].get("reagendar_notas")
         
-        # 🔥 Manejar interrupciones
+        #Manejar interrupciones
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "fecha_hora", historial)
         if not clasificacion.get("es_valido"):
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu consulta.")
             respuesta_texto = f"{respuesta_rag}\n\nPara reagendar la cita, necesito que me indiques la nueva fecha y hora (ej: 'mañana a las 11:00' o '7 de abril a las 12:00'). ¿Cuándo prefieres la nueva cita?"
             return respuesta_texto, agendamientos_temp
         
-        # 🔥 Extraer fecha y hora
+        #Extraer fecha y hora
         analisis_fecha = rag.extraer_intencion_y_fecha(texto_mensaje, historial)
         nueva_fecha = analisis_fecha.get("fecha")
         nueva_hora = analisis_fecha.get("hora")

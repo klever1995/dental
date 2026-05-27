@@ -1,3 +1,7 @@
+# ==============================
+# Endpoint de gestión de especialidades médicas
+# Cada especialidad tiene su propio calendario en Google Calendar y sincronización con RAG
+# ==============================
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -17,7 +21,9 @@ load_dotenv()
 
 router = APIRouter(prefix="/especialidades", tags=["Especialidades"])
 
+# ==============================
 # Configuración de Google Calendar
+# ==============================
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account-key.json")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
@@ -33,10 +39,7 @@ def get_google_calendar_service():
         raise Exception(f"Error autenticando con Google Calendar: {str(e)}")
 
 def crear_calendario_google(titulo: str, descripcion: str) -> str:
-    """
-    Crea un nuevo calendario en Google Calendar para la especialidad
-    Retorna el calendar_id del calendario creado
-    """
+    """Crea un nuevo calendario en Google Calendar para la especialidad"""
     service = get_google_calendar_service()
     
     calendario = {
@@ -76,16 +79,12 @@ def actualizar_calendario_google(calendar_id: str, titulo: str = None, descripci
         except HttpError as error:
             raise Exception(f"Error actualizando calendario en Google Calendar: {error}")
 
-# ============================================
-# ENDPOINTS
-# ============================================
-
+# ==============================
+# Crear especialidad (crea automáticamente el calendario en Google)
+# ==============================
 @router.post("/", response_model=EspecialidadResponse, status_code=status.HTTP_201_CREATED)
 def crear_especialidad(especialidad: EspecialidadCreate, db: Session = Depends(get_db)):
-    """
-    Crea una nueva especialidad.
-    Automáticamente crea un calendario en Google Calendar.
-    """
+
     empresa = db.query(Empresa).filter(Empresa.id == especialidad.empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
@@ -125,6 +124,9 @@ def crear_especialidad(especialidad: EspecialidadCreate, db: Session = Depends(g
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al crear la especialidad: {str(e)}")
 
+# ==============================
+# Listar especialidades de una empresa
+# ==============================
 @router.get("/", response_model=List[EspecialidadResponse])
 def listar_especialidades(
     empresa_id: int,
@@ -138,6 +140,9 @@ def listar_especialidades(
     
     return especialidades
 
+# ==============================
+# Obtener una especialidad por ID
+# ==============================
 @router.get("/{especialidad_id}", response_model=EspecialidadResponse)
 def obtener_especialidad(especialidad_id: int, db: Session = Depends(get_db)):
     especialidad = db.query(Especialidad).filter(Especialidad.id == especialidad_id).first()
@@ -145,6 +150,9 @@ def obtener_especialidad(especialidad_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Especialidad no encontrada")
     return especialidad
 
+# ==============================
+# Actualizar especialidad (sincroniza cambios con Google Calendar y RAG)
+# ==============================
 @router.put("/{especialidad_id}", response_model=EspecialidadResponse)
 def actualizar_especialidad(
     especialidad_id: int,
@@ -180,6 +188,9 @@ def actualizar_especialidad(
     
     return especialidad
 
+# ==============================
+# Eliminar especialidad (elimina su calendario en Google y sincroniza RAG)
+# ==============================
 @router.delete("/{especialidad_id}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar_especialidad(especialidad_id: int, db: Session = Depends(get_db)):
     especialidad = db.query(Especialidad).filter(Especialidad.id == especialidad_id).first()

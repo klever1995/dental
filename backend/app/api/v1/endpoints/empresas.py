@@ -1,3 +1,7 @@
+# ==============================
+# Endpoint de gestión de empresas
+# CRUD completo para entidades empresariales (multitenencia)
+# ==============================
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -9,6 +13,9 @@ from app.schemas.empresa import Empresa, EmpresaCreate
 
 router = APIRouter(prefix="/empresas", tags=["empresas"])
 
+# ==============================
+# Crear una nueva empresa con token API único
+# ==============================
 @router.post("/", response_model=Empresa, status_code=status.HTTP_201_CREATED)
 def crear_empresa(empresa: EmpresaCreate, db: Session = Depends(get_db)):
     # Verificar si ya existe una empresa con ese teléfono
@@ -37,11 +44,17 @@ def crear_empresa(empresa: EmpresaCreate, db: Session = Depends(get_db)):
     
     return nueva_empresa
 
+# ==============================
+# Listar empresas con paginación
+# ==============================
 @router.get("/", response_model=List[Empresa])
 def listar_empresas(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     empresas = db.query(EmpresaModel).offset(skip).limit(limit).all()
     return empresas
 
+# ==============================
+# Obtener una empresa por ID
+# ==============================
 @router.get("/{empresa_id}", response_model=Empresa)
 def obtener_empresa(empresa_id: int, db: Session = Depends(get_db)):
     empresa = db.query(EmpresaModel).filter(EmpresaModel.id == empresa_id).first()
@@ -52,15 +65,16 @@ def obtener_empresa(empresa_id: int, db: Session = Depends(get_db)):
         )
     return empresa
 
+# ==============================
+# Actualizar datos de una empresa
+# ==============================
 @router.put("/{empresa_id}", response_model=Empresa)
 def actualizar_empresa(
     empresa_id: int, 
     empresa_data: EmpresaCreate, 
     db: Session = Depends(get_db)
 ):
-    """
-    Actualiza los datos de una empresa existente
-    """
+
     # Buscar la empresa
     empresa = db.query(EmpresaModel).filter(EmpresaModel.id == empresa_id).first()
     
@@ -87,7 +101,7 @@ def actualizar_empresa(
     empresa.nombre = empresa_data.nombre
     empresa.telefono_whatsapp = empresa_data.telefono_whatsapp
     empresa.prompt_personalizado = empresa_data.prompt_personalizado
-    empresa.telefono_dueño = empresa_data.telefono_dueño  # ← NUEVA LÍNEA
+    empresa.telefono_dueño = empresa_data.telefono_dueño  
     empresa.activa = empresa_data.activa
     
     db.commit()

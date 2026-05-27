@@ -1,3 +1,7 @@
+# ==============================
+# Endpoint de autenticación y gestión de usuarios
+# Registro, login, JWT y CRUD de usuarios con roles (admin/doctor)
+# ==============================
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -16,7 +20,9 @@ from app.schemas.usuarios import (
 )
 import os
 
-# Configuración de seguridad
+# ==============================
+# Configuración de JWT
+# ==============================
 SECRET_KEY = os.getenv("SECRET_KEY", "tu_secreto_super_seguro_cambia_esto")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -26,7 +32,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/usuarios/login")
 
 router = APIRouter(prefix="/usuarios", tags=["usuarios"])
 
-# Funciones auxiliares
+# ==============================
+# Funciones auxiliares de seguridad
+# ==============================
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -43,6 +51,9 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+# ==============================
+# Dependencias de autenticación
+# ==============================
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -73,7 +84,9 @@ async def get_current_active_user(current_user: Usuario = Depends(get_current_us
         raise HTTPException(status_code=400, detail="Usuario inactivo")
     return current_user
 
-# Endpoints públicos
+# ==============================
+# Endpoint público: registro de usuario
+# ==============================
 @router.post("/registro", response_model=UsuarioResponse, status_code=status.HTTP_201_CREATED)
 def registrar_usuario(
     usuario: UsuarioCreate,
@@ -124,6 +137,9 @@ def registrar_usuario(
     
     return nuevo_usuario
 
+# ==============================
+# Endpoint público: login (retorna JWT)
+# ==============================
 @router.post("/login", response_model=Token)
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -164,11 +180,16 @@ def login(
     
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Endpoints protegidos (requieren autenticación)
+# ==============================
+# Endpoint protegido: perfil propio
+# ==============================
 @router.get("/me", response_model=UsuarioResponse)
 def leer_usuario_actual(current_user: Usuario = Depends(get_current_active_user)):
     return current_user
 
+# ==============================
+# Listar usuarios (con filtros por empresa y rol)
+# ==============================
 @router.get("/", response_model=List[UsuarioResponse])
 def listar_usuarios(
     skip: int = 0,
@@ -186,6 +207,9 @@ def listar_usuarios(
     usuarios = query.offset(skip).limit(limit).all()
     return usuarios
 
+# ==============================
+# Obtener un usuario por ID
+# ==============================
 @router.get("/{usuario_id}", response_model=UsuarioResponse)
 def obtener_usuario(
     usuario_id: int,
@@ -211,6 +235,9 @@ def obtener_usuario(
     
     return usuario
 
+# ==============================
+# Actualizar usuario (solo admin o el mismo usuario)
+# ==============================
 @router.put("/{usuario_id}", response_model=UsuarioResponse)
 def actualizar_usuario(
     usuario_id: int,
@@ -275,6 +302,9 @@ def actualizar_usuario(
     
     return usuario
 
+# ==============================
+# Eliminar usuario (solo admin, no puede eliminarse a sí mismo)
+# ==============================
 @router.delete("/{usuario_id}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar_usuario(
     usuario_id: int,

@@ -1,3 +1,7 @@
+# ==============================
+# Servicio de envío de mensajes por WhatsApp (API Meta/Facebook)
+# Mensajes de texto, plantillas y botones interactivos
+# ==============================
 import os
 import requests
 from typing import Optional, List, Dict, Any
@@ -9,22 +13,15 @@ WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
 # URL base de la API de Meta
 BASE_URL = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_ID}/messages"
 
+# ==============================
+# Enviar mensaje de texto simple
+# ==============================
 def enviar_mensaje_whatsapp(
     telefono_destino: str,
     mensaje: str,
     token: Optional[str] = None
 ) -> dict:
-    """
-    Envía un mensaje de texto a un número de WhatsApp usando la API de Meta
-    
-    Args:
-        telefono_destino: Número de teléfono del destinatario (con código de país)
-        mensaje: Texto del mensaje a enviar
-        token: Token de acceso (opcional, usa el del .env por defecto)
-    
-    Returns:
-        dict: Respuesta de la API de Meta o información del error
-    """
+
     # Usar token del .env si no se proporciona uno
     token_usado = token or WHATSAPP_TOKEN
     
@@ -90,24 +87,16 @@ def enviar_mensaje_whatsapp(
             "error": f"Error inesperado: {str(e)}"
         }
 
+# ==============================
+# Enviar mensaje con plantilla aprobada (notificaciones)
+# ==============================
 def enviar_mensaje_con_plantilla(
     telefono_destino: str,
     nombre_plantilla: str,
     componentes: list = [],
     token: Optional[str] = None
 ) -> dict:
-    """
-    Envía un mensaje usando una plantilla aprobada (útil para notificaciones)
-    
-    Args:
-        telefono_destino: Número de teléfono del destinatario
-        nombre_plantilla: Nombre de la plantilla en Meta
-        componentes: Componentes de la plantilla (cabecera, cuerpo, botones)
-        token: Token de acceso (opcional)
-    
-    Returns:
-        dict: Respuesta de la API
-    """
+
     token_usado = token or WHATSAPP_TOKEN
     
     if not token_usado:
@@ -125,7 +114,7 @@ def enviar_mensaje_con_plantilla(
         "template": {
             "name": nombre_plantilla,
             "language": {
-                "code": "es"  # Español
+                "code": "es" 
             },
             "components": componentes
         }
@@ -147,25 +136,16 @@ def enviar_mensaje_con_plantilla(
     except Exception as e:
         return {"exito": False, "error": f"Error: {str(e)}"}
 
-# ===== NUEVA FUNCIÓN PARA BOTONES INTERACTIVOS =====
+# ==============================
+# Enviar mensaje con botones interactivos (Aprobar/Rechazar)
+# ==============================
 def enviar_mensaje_con_botones(
     telefono_destino: str,
     texto_cabecera: str,
     cliente_id: int,
     token: Optional[str] = None
 ) -> dict:
-    """
-    Envía un mensaje con botones interactivos de aprobar/rechazar
-    
-    Args:
-        telefono_destino: Número del destinatario (dueño)
-        texto_cabecera: Texto informativo sobre el cliente/comprobante
-        cliente_id: ID del cliente para incluir en el callback_data
-        token: Token de acceso (opcional)
-    
-    Returns:
-        dict: Respuesta de la API
-    """
+
     token_usado = token or WHATSAPP_TOKEN
     
     if not token_usado:

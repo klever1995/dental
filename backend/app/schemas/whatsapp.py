@@ -1,3 +1,7 @@
+# ==============================
+# Esquemas Pydantic para WhatsApp
+# Define la estructura de datos para recibir mensajes del webhook y enviar respuestas
+# ==============================
 from pydantic import BaseModel, Field
 from typing import Optional
 

@@ -1,3 +1,7 @@
+# ==============================
+# Endpoint de gestión de citas con Google Calendar
+# Listado, agendamiento, cancelación, reagendamiento, estadísticas y webhook
+# ==============================
 from fastapi import APIRouter, Depends, HTTPException, status, Form, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -21,18 +25,16 @@ router = APIRouter(prefix="/citas", tags=["citas"])
 
 TIMEZONE = "America/Guayaquil"
 
+# ==============================
+# Listar todas las citas (futuras y pasadas) con filtro por especialidad
+# ==============================
 @router.get("/")
 def listar_todas_citas(
     especialidad_id: Optional[int] = None,
     current_user: Usuario = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Lista todas las citas futuras y pasadas de la empresa, obtenidas de los calendarios de especialidades.
-    - Admin: puede filtrar por especialidad (parámetro opcional).
-    - Doctor: ignora el parámetro y fuerza su propia especialidad.
-    """
-    # 🔥 Si es doctor, forzar su especialidad (ignora especialidad_id)
+
     if current_user.rol != "admin":
         if not current_user.especialidad_id:
             return []
@@ -162,6 +164,9 @@ def listar_todas_citas(
     todas_las_citas.sort(key=lambda x: x.get('start_time', ''), reverse=True)
     return todas_las_citas
 
+# ==============================
+# Consultar horarios disponibles (slots) para una especialidad
+# ==============================
 @router.get("/slots")
 def consultar_slots(
     especialidad: str,
@@ -195,10 +200,13 @@ def consultar_slots(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=resultado.get("mensaje", "Error al consultar slots")
         )
-    
+
+# ==============================
+# Agendar una nueva cita desde el panel de administración
+# ==============================    
 @router.post("/agendar")
 def agendar_cita_desde_panel(
-    especialidad: str = Form(...),  # 🔥 NUEVO: nombre de la especialidad
+    especialidad: str = Form(...), 
     cliente_nombre: str = Form(...),
     cliente_email: str = Form(...),
     cliente_cedula: str = Form(...),
@@ -256,11 +264,14 @@ def agendar_cita_desde_panel(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=resultado.get("error", "Error al agendar la cita")
         )    
-    
+
+# ==============================
+# Cancelar una cita existente
+# ==============================    
 @router.delete("/{event_id}")
 def cancelar_cita(
     event_id: str,
-    calendar_id: str,  # 🔥 NUEVO: ID del calendario donde está la cita
+    calendar_id: str,  
     current_user: Usuario = Depends(get_current_active_user)
 ):
     """
@@ -276,22 +287,22 @@ def cancelar_cita(
             detail=resultado.get("error", "Error al cancelar la cita")
         )    
     
+# ==============================
+# Reagendar una cita (cambiar fecha/hora)
+# ==============================    
 @router.put("/{event_id}/reagendar")
 def reagendar_cita_desde_panel(
     event_id: str,
-    calendar_id: str = Form(...),  # 🔥 NUEVO: ID del calendario donde está la cita
+    calendar_id: str = Form(...),  
     nueva_fecha: str = Form(...),
     nueva_hora: str = Form(...),
     cliente_nombre: str = Form(...),
     cliente_email: str = Form(...),
     cliente_telefono: str = Form(...),
-    cliente_cedula: str = Form(...),  # 🔥 NUEVO: necesario para crear la nueva cita
-    cliente_notas: str = Form(None),  # 🔥 NUEVO: notas originales (opcional)
+    cliente_cedula: str = Form(...),  
+    cliente_notas: str = Form(None),  
     current_user: Usuario = Depends(get_current_active_user)
 ):
-    """
-    Reagenda una cita existente en Google Calendar.
-    """
     
     ecuador = pytz.timezone(TIMEZONE)
     
@@ -327,10 +338,13 @@ def reagendar_cita_desde_panel(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=resultado.get("error", "Error al reagendar la cita")
         )    
-    
+
+# ==============================
+# Obtener estadísticas del dashboard (totales, citas hoy, próximas, etc.)
+# ==============================    
 @router.get("/dashboard/stats")
 def obtener_estadisticas(
-    especialidad_id: Optional[int] = None,  # 🔥 NUEVO: parámetro opcional
+    especialidad_id: Optional[int] = None, 
     current_user: Usuario = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -506,6 +520,9 @@ def obtener_estadisticas(
         "fecha_actual": ahora.isoformat()
     }
 
+# ==============================
+# Historial de citas de un paciente por cédula
+# ==============================
 @router.get("/historial/{cedula}")
 def obtener_historial_citas(
     cedula: str,
@@ -515,11 +532,7 @@ def obtener_historial_citas(
     current_user: Usuario = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Obtiene el historial de citas pasadas de un paciente por su cédula.
-    - Si es admin: puede filtrar por especialidad (opcional).
-    - Si es doctor: solo ve citas de su especialidad (ignora especialidad_id).
-    """
+
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from datetime import datetime, timedelta
@@ -531,7 +544,7 @@ def obtener_historial_citas(
     
     # Determinar qué calendarios consultar
     calendarios_a_consultar = []
-    especialidades = []  # Para guardar la lista de especialidades y poder mapear nombres
+    especialidades = [] 
     
     if current_user.rol == "admin":
         if especialidad_id:
@@ -617,7 +630,7 @@ def obtener_historial_citas(
                     start_dt = pytz.utc.localize(start_dt)
                 start_local = start_dt.astimezone(ecuador)
                 
-                # 🔥 CORRECCIÓN: Incluir citas pasadas (incluyendo las de hoy que ya ocurrieron)
+                # Incluir citas pasadas 
                 if start_local > ahora:
                     continue
                 
@@ -692,12 +705,12 @@ def obtener_historial_citas(
         "citas": citas
     }
 
+# ==============================
+# Webhook para notificaciones push de Google Calendar
+# ==============================
 @router.post("/webhook/google")
 async def google_calendar_webhook(request: Request):
-    """
-    Endpoint que recibe notificaciones de Google Calendar cuando hay cambios.
-    Google envía automáticamente un POST aquí cuando se crea, actualiza o elimina un evento.
-    """
+
     resource_state = request.headers.get("X-Goog-Resource-State")
     resource_id = request.headers.get("X-Goog-Resource-ID")
     channel_id = request.headers.get("X-Goog-Channel-ID")

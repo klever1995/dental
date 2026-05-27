@@ -1,3 +1,7 @@
+# ==============================
+# Handler de agendamiento de citas
+# Flujo paso a paso: nombre → cédula → especialidad → fecha → hora → email → agendar
+# ==============================
 import datetime
 import pytz
 import re
@@ -36,7 +40,7 @@ async def manejar_agendamiento(
             "nombre": nombre,
             "cedula": None,
             "especialidad": especialidad,
-            "calendar_id": None,  # 🔥 CAMBIADO: ahora calendar_id
+            "calendar_id": None,  
             "fecha": fecha,
             "hora": hora,
             "email": email,
@@ -121,7 +125,7 @@ async def manejar_agendamiento(
         especialidades_validas = []
         for esp in especialidades_bd:
             nombre_normalizado = quitar_tildes(esp.nombre.lower())
-            especialidades_validas.append((nombre_normalizado, esp.nombre, esp.calendar_id))  # 🔥 calendar_id
+            especialidades_validas.append((nombre_normalizado, esp.nombre, esp.calendar_id))  
         
         for nombre_norm, nombre_original, cal_id in especialidades_validas:
             if nombre_norm in texto_mensaje_normalizado or texto_mensaje_normalizado in nombre_norm:
@@ -167,9 +171,9 @@ async def manejar_agendamiento(
                     datos["calendar_id"] = esp_obj.calendar_id
                 db.close()
             
-            # 🔥 OBTENER SLOTS CON calendar_id
+            #OBTENER SLOTS CON calendar_id
             slots = obtener_slots_disponibles(
-                calendar_id=datos["calendar_id"],  # 🔥 CAMBIADO
+                calendar_id=datos["calendar_id"], 
                 fecha_inicio=datos["fecha"],
                 dias_a_mostrar=1
             )
@@ -313,9 +317,9 @@ async def manejar_agendamiento(
         
         db.close()
         
-        # 🔥 AGENDAR CON calendar_id
+        #AGENDAR CON calendar_id
         resultado = agendar_cita(
-            calendar_id=datos["calendar_id"],  # 🔥 CAMBIADO
+            calendar_id=datos["calendar_id"],  
             cliente_nombre=datos["nombre"],
             cliente_email=datos["email"],
             cliente_cedula=datos["cedula"],

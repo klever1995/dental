@@ -1,3 +1,7 @@
+# ==============================
+# Handler de cancelación de citas
+# Flujo: pedir cédula → mostrar citas → seleccionar por número/fecha/hora → confirmar cancelación
+# ==============================
 import re
 import datetime
 from app.services.google_calendar import obtener_citas_cliente_por_cedula, eliminar_cita
@@ -114,14 +118,14 @@ async def manejar_cancelacion(
         citas = estado["data"].get("citas", [])
         cita_seleccionada = None
         
-        # 🔥 1. INTENTAR POR NÚMERO DE LISTA
+        #1. INTENTAR POR NÚMERO DE LISTA
         match_num = re.search(r'(\d+)', texto_mensaje)
         if match_num:
             idx = int(match_num.group(1)) - 1
             if 0 <= idx < len(citas):
                 cita_seleccionada = citas[idx]
         
-        # 🔥 2. SI NO, INTENTAR POR FECHA
+        #2. SI NO, INTENTAR POR FECHA
         if not cita_seleccionada:
             analisis = rag.extraer_intencion_y_fecha(texto_mensaje, historial)
             fecha_extraida = analisis.get("fecha")
@@ -133,7 +137,7 @@ async def manejar_cancelacion(
                         cita_seleccionada = cita
                         break
         
-        # 🔥 3. SI NO, INTENTAR POR HORA
+        #3. SI NO, INTENTAR POR HORA
         if not cita_seleccionada:
             hora_match = re.search(r'(\d{1,2})\s*(?::\s*00)?\s*(?:am|pm|horas|hrs)?', texto_mensaje.lower())
             if hora_match:
@@ -149,7 +153,7 @@ async def manejar_cancelacion(
                         cita_seleccionada = cita
                         break
         
-        # 🔥 SI SE ENCONTRÓ UNA CITA, CANCELAR
+        #SI SE ENCONTRÓ UNA CITA, CANCELAR
         if cita_seleccionada:
             event_id = cita_seleccionada.get("booking_id")
             calendar_id = cita_seleccionada.get("calendar_id")
@@ -168,7 +172,7 @@ async def manejar_cancelacion(
             del agendamientos_temp[cliente_id]
             return respuesta_texto, agendamientos_temp
         
-        # 🔥 SI NO SE ENCONTRÓ, MANEJAR INTERRUPCIÓN O REPETIR LISTA
+        #SI NO SE ENCONTRÓ, MANEJAR INTERRUPCIÓN O REPETIR LISTA
         clasificacion = rag.clasificar_respuesta_flujo(texto_mensaje, "numero_cita", historial)
         if not clasificacion.get("es_valido"):
             respuesta_rag = clasificacion.get("respuesta_rag", "No entendí tu consulta.")

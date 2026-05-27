@@ -1,3 +1,7 @@
+# ==============================
+# Esquemas Pydantic para Empresa
+# Define la estructura de datos para crear, leer y validar empresas
+# ==============================
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime

@@ -1,3 +1,7 @@
+# ==============================
+# Servicio Scheduler para webhooks de Google Calendar
+# Renueva automáticamente las suscripciones antes de que expiren (cada 24 horas)
+# ==============================
 import os
 import time
 from datetime import datetime
@@ -12,6 +16,9 @@ from app.models.especialidad import Especialidad
 
 TIMEZONE = "America/Guayaquil"
 
+# ==============================
+# Renovar suscripciones a punto de expirar (menos de 24 horas restantes)
+# ==============================
 def renovar_suscripciones():
     db = SessionLocal()
     expiracion_limite = (datetime.now(pytz.utc).timestamp() * 1000) + (24 * 60 * 60 * 1000)
@@ -66,6 +73,9 @@ def renovar_suscripciones():
             print(f"❌ Error renovando {sub.id}: {e}")
     db.close()
 
+# ==============================
+# Iniciar el scheduler de fondo con ejecución cada 24 horas
+# ==============================
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
     scheduler.add_job(renovar_suscripciones, trigger=IntervalTrigger(hours=24), id='renovar_webhooks', replace_existing=True)

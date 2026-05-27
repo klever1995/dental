@@ -1,3 +1,7 @@
+# ==============================
+# Endpoint de gestión de documentos
+# Subida, listado y eliminación de documentos (PDF/ODF) para RAG
+# ==============================
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -11,6 +15,9 @@ from app.models.documento import Documento
 
 router = APIRouter(prefix="/documentos", tags=["documentos"])
 
+# ==============================
+# Subir un documento PDF o ODF para procesar con RAG
+# ==============================
 @router.post("/subir/{empresa_id}")
 async def subir_documento(
     empresa_id: int,
@@ -53,6 +60,9 @@ async def subir_documento(
             detail=f"Error al procesar el documento: {str(e)}"
         )
 
+# ==============================
+# Listar documentos subidos por una empresa
+# ==============================
 @router.get("/listar/{empresa_id}")
 def listar_documentos(
     empresa_id: int,
@@ -74,6 +84,9 @@ def listar_documentos(
         for doc in documentos
     ]
 
+# ==============================
+# Eliminar un documento y sus chunks asociados
+# ==============================
 @router.delete("/{documento_id}")
 def eliminar_documento(
     documento_id: int,

@@ -1,3 +1,7 @@
+# ==============================
+# Servicio RAG (Retrieval-Augmented Generation)
+# Embeddings, búsqueda semántica, generación de respuestas y sincronización de especialidades
+# ==============================
 import os 
 from typing import List, Dict, Any, Optional
 import numpy as np
@@ -23,8 +27,11 @@ class RAGService:
         self.db = db
         self.empresa_id = empresa_id
         self.cliente_id = cliente_id
-        self.DOCUMENTO_ESPECIALIDADES_ID = 9999  # ID fijo para el documento de especialidades
-    
+        self.DOCUMENTO_ESPECIALIDADES_ID = 9999  
+
+# ==============================
+# Obtener historial reciente de conversación (últimos N mensajes)
+# ==============================    
     def obtener_historial_reciente(self, limite: int = 20) -> str:
         """Obtiene los últimos mensajes de la conversación actual"""
         if not self.cliente_id:
@@ -45,11 +52,11 @@ class RAGService:
         
         return "\n".join(historial)
     
+# ==============================
+# Extraer intención, fecha, hora, nombre, especialidad y booking_id del mensaje
+# ==============================    
     def extraer_intencion_y_fecha(self, mensaje: str, historial: str = "") -> dict:
-        """
-        Extrae la intención del mensaje, fecha, hora, nombre, especialidad y booking_id si corresponde.
-        NO ejecuta funciones, solo devuelve JSON.
-        """
+
         ecuador = pytz.timezone("America/Guayaquil")
         hoy = datetime.now(ecuador).strftime("%Y-%m-%d")
         
@@ -117,30 +124,18 @@ RESPONDE SOLO EL JSON, sin texto adicional."""
         
         try:
             resultado = json.loads(response.choices[0].message.content)
-            # Asegurar que el campo especialidad exista
+
             if "especialidad" not in resultado:
                 resultado["especialidad"] = None
             return resultado
         except:
             return {"intencion": "OTRO", "fecha": None, "hora": None, "nombre": None, "especialidad": None, "booking_id": None}
-    
+        
+# ==============================
+# Clasificar respuesta dentro de un flujo (agendamiento, cancelación, etc.)
+# ==============================    
     def clasificar_respuesta_flujo(self, mensaje: str, paso_actual: str, historial: str = "") -> dict:
-        """
-        Clasifica si el mensaje del usuario es una respuesta válida para el paso actual
-        o si es una interrupción/pregunta fuera del flujo.
-        
-        Args:
-            mensaje: Mensaje del usuario
-            paso_actual: El paso actual del flujo (ej: "nombre", "fecha", "hora", "email")
-            historial: Historial reciente de la conversación
-        
-        Returns:
-            dict: {
-                "es_valido": bool,  # True si el mensaje responde a lo que se pide
-                "respuesta_rag": str,  # Si es inválido, respuesta generada por RAG
-                "dato_extraido": str o null  # Si es válido, el dato extraído
-            }
-        """
+
         ecuador = pytz.timezone("America/Guayaquil")
         hoy = datetime.now(ecuador).strftime("%Y-%m-%d")
         
@@ -186,11 +181,12 @@ RESPONDE SOLO EL JSON, sin texto adicional."""
             return resultado
         except:
             return {"es_valido": False, "dato_extraido": None, "respuesta_rag": "Lo siento, no entendí. ¿Podrías repetirlo?"}
-    
+
+# ==============================
+# Generar respuesta conversacional con contexto RAG
+# ==============================    
     def generar_respuesta_con_texto(self, consulta: str, contexto: str, resumen_cliente: str = "") -> str:
-        """
-        Genera respuesta usando GPT-4o SOLO para conversación (sin function calling)
-        """
+
         historial = self.obtener_historial_reciente()
         
         system_prompt = f"""Eres un asistente virtual de una clínica dental llamada Sonrisa Dental Center.
@@ -221,15 +217,11 @@ Instrucciones:
         
         return response.choices[0].message.content
     
-    # ============================================
-    # NUEVO: Sincronización de especialidades como chunks
-    # ============================================
-    
+# ==============================
+# Sincronizar especialidades como chunks RAG (documento virtual)
+# ==============================
     def sincronizar_especialidades(self):
-        """
-        Sincroniza todas las especialidades activas como chunks en la tabla chunks_documento.
-        Asocia los chunks a un documento especial con id = DOCUMENTO_ESPECIALIDADES_ID.
-        """
+
         from app.models.especialidad import Especialidad
         from app.models.documento import ChunkDocumento
         
@@ -279,20 +271,20 @@ Esta especialidad está activa y se pueden agendar citas consultando los horario
         self.db.commit()
         print(f"✅ Sincronizadas {len(especialidades)} especialidades como chunks RAG")
     
-    # ============================================
-    # MÉTODOS EXISTENTES (sin cambios)
-    # ============================================
-    
+# ==============================
+# Extraer texto de un PDF
+# ==============================
     def extraer_texto_pdf(self, archivo_bytes: bytes) -> str:
-        """Extrae texto de un archivo PDF"""
         texto = ""
         pdf = PdfReader(BytesIO(archivo_bytes))
         for pagina in pdf.pages:
             texto += pagina.extract_text()
         return texto
-    
+
+# ==============================
+# Dividir texto en chunks superpuestos
+# ==============================    
     def dividir_en_chunks(self, texto: str, tamano_chunk: int = 500, solapamiento: int = 50) -> List[str]:
-        """Divide el texto en fragmentos más pequeños para embedding"""
         palabras = texto.split()
         chunks = []
         
@@ -302,17 +294,21 @@ Esta especialidad está activa y se pueden agendar citas consultando los horario
                 chunks.append(chunk)
         
         return chunks
-    
+
+# ==============================
+# Generar embedding con OpenAI
+# ==============================    
     def generar_embedding(self, texto: str) -> List[float]:
-        """Genera embedding usando OpenAI estándar"""
         respuesta = client.embeddings.create(
             model=OPENAI_EMBEDDING_MODEL,
             input=texto
         )
         return respuesta.data[0].embedding
-    
+
+# ==============================
+# Guardar documento (PDF) en la base de datos vectorial
+# ==============================    
     def guardar_documento(self, nombre_archivo: str, contenido_bytes: bytes):
-        """Procesa y guarda un documento en la base de datos vectorial"""
         from app.models.documento import Documento, ChunkDocumento
         
         texto = self.extraer_texto_pdf(contenido_bytes)
@@ -338,10 +334,11 @@ Esta especialidad está activa y se pueden agendar citas consultando los horario
         
         self.db.commit()
         return doc
-    
+
+# ==============================
+# Búsqueda semántica: chunks similares a la consulta
+# ==============================    
     def buscar_similares(self, consulta: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Busca chunks similares a la consulta usando similitud de coseno.
-        Busca tanto en los chunks de documentos PDF como en los de especialidades."""
         from app.models.documento import ChunkDocumento
         
         embedding_consulta = self.generar_embedding(consulta)
