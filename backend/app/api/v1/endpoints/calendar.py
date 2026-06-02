@@ -364,11 +364,15 @@ def obtener_estadisticas(
                 Especialidad.activa == True,
                 Especialidad.calendar_id.isnot(None)
             ).first()
-            if esp:
+            # 🔥 VALIDACIÓN: Verificar que la especialidad pertenezca a la empresa del usuario
+            if esp and esp.empresa_id == current_user.empresa_id:
                 calendarios_a_consultar = [esp.calendar_id]
+            else:
+                calendarios_a_consultar = []
         else:
-            # Admin sin filtro: todas las especialidades
+            # Admin sin filtro: todas las especialidades de su empresa
             especialidades = db.query(Especialidad).filter(
+                Especialidad.empresa_id == current_user.empresa_id,
                 Especialidad.activa == True,
                 Especialidad.calendar_id.isnot(None)
             ).all()
@@ -378,6 +382,7 @@ def obtener_estadisticas(
         if current_user.especialidad_id:
             esp = db.query(Especialidad).filter(
                 Especialidad.id == current_user.especialidad_id,
+                Especialidad.empresa_id == current_user.empresa_id,
                 Especialidad.activa == True
             ).first()
             if esp and esp.calendar_id:
@@ -553,11 +558,16 @@ def obtener_historial_citas(
                 Especialidad.activa == True,
                 Especialidad.calendar_id.isnot(None)
             ).first()
-            if esp:
+            # 🔥 VALIDACIÓN: Verificar que la especialidad pertenezca a la empresa del usuario
+            if esp and esp.empresa_id == current_user.empresa_id:
                 calendarios_a_consultar = [esp.calendar_id]
                 especialidades = [esp]
+            else:
+                calendarios_a_consultar = []
+                especialidades = []
         else:
             especialidades = db.query(Especialidad).filter(
+                Especialidad.empresa_id == current_user.empresa_id,
                 Especialidad.activa == True,
                 Especialidad.calendar_id.isnot(None)
             ).all()
@@ -566,6 +576,7 @@ def obtener_historial_citas(
         if current_user.especialidad_id:
             esp = db.query(Especialidad).filter(
                 Especialidad.id == current_user.especialidad_id,
+                Especialidad.empresa_id == current_user.empresa_id,
                 Especialidad.activa == True
             ).first()
             if esp and esp.calendar_id:

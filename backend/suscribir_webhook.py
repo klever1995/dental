@@ -12,7 +12,7 @@ from psycopg2.extras import RealDictCursor
 load_dotenv()
 
 # CAMBIA ESTA URL POR TU URL PÚBLICA DE NGROK O DOMINIO - USANDO LA URL CORRECTA DEL BACKEND (PUERTO 8001)
-WEBHOOK_URL = "https://838a-191-99-12-8.ngrok-free.app/api/v1/citas/webhook/google"
+WEBHOOK_URL = "https://8821-191-99-12-8.ngrok-free.app/api/v1/citas/webhook/google"
 
 # DATABASE_URL - CORREGIDO EL PUERTO A 5433
 DATABASE_URL = "postgresql://admin:admin123@localhost:5433/dental_db"

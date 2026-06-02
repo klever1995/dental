@@ -25,7 +25,7 @@ import os
 # ==============================
 SECRET_KEY = os.getenv("SECRET_KEY", "tu_secreto_super_seguro_cambia_esto")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 180
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/usuarios/login")

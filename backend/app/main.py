@@ -12,7 +12,6 @@ async def lifespan(app: FastAPI):
     # Iniciar el scheduler de renovación de webhooks al arrancar el backend
     start_scheduler()
     yield
-    # Aquí puedes agregar lógica de cierre si es necesaria
     print("🔄 Cerrando scheduler...")
 
 # Crear las tablas en la base de datos
@@ -20,10 +19,14 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Chatbot Sublimados API", lifespan=lifespan)
 
-# Configuración de CORS
+# Configuración de CORS CORREGIDA
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:3001","https://efe3-191-99-12-8.ngrok-free.app"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://59ed-191-99-12-8.ngrok-free.app",   # Frontend
+        "https://8821-191-99-12-8.ngrok-free.app"    # Backend
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
